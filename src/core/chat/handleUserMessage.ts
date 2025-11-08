@@ -10,6 +10,12 @@ import { ensureChatSession } from './sessions';
 import { storeMessage, loadRecentMessages } from './store';
 import { buildHistoryContext } from '../../lib/chatHistoryContext';
 import { runTMWYAPipeline } from '../../lib/tmwya/pipeline';
+import { loadRoutesOnce, getCachedRoutes } from '../router/routesCache';
+import { decideRoute } from '../router/semanticRouter';
+import { rankTopPreferences, prefsToSystemLine } from '../memory/preferences';
+import { TMWYA_TOOL } from '../nutrition/tools';
+
+const TRIGGER_WORDS = /\b(source|link|links|cite|verify|latest|current|news|today|this week|20\d{2}|19\d{2})\b/i;
 
 /**
  * Strip leading style JSON from assistant responses
@@ -79,12 +85,35 @@ export async function handleUserMessage(
   // Step 1: Store user message
   await storeMessage(sessionId, 'user', message);
 
-  // Step 1.5: Call Personality Router (LLM-aware intelligent routing)
-  const routerDecision = await detectIntent(message);
-  console.info('[handleUserMessage] Personality router decision:', routerDecision);
+  // Initialize supabase client
+  const { getSupabase } = await import('../../lib/supabase');
+  const supabase = getSupabase();
+
+  // Load routes once at app init
+  await loadRoutesOnce(supabase);
+
+  // Get user preferences for injection
+  const prefs = await rankTopPreferences(context.userId, message, supabase, 3);
+  const sysPrefs = prefsToSystemLine(prefs);
+
+  // Step 1.5: Semantic routing with fast path
+  let routeDecision: any = null;
+  let used_web = false;
+
+  // Fast path for trivial non-factual chat
+  if (message.split(/\s+/).length < 12 && !TRIGGER_WORDS.test(message)) {
+    routeDecision = { route: 'AMA', confidence: 'low', sim: 0, hi: 0.85, mid: 0.60, why: 'Fast path: trivial query' };
+    used_web = false;
+  } else {
+    // Full semantic routing
+    routeDecision = await decideRoute(message, getCachedRoutes());
+    used_web = routeDecision.route === 'AMA' && routeDecision.confidence !== 'low';
+  }
+
+  console.info('[router]', { route: routeDecision.route, sim: routeDecision.sim, hi: routeDecision.hi, mid: routeDecision.mid, why: routeDecision.why, used_web });
 
   // Early branch: Route to TMWYA pipeline for meal logging
-  if (routerDecision.route_to === 'tmwya') {
+  if (routeDecision.route === 'TMWYA') {
     try {
       const tmwyaInput = {
         userMessage: message,
@@ -122,8 +151,9 @@ export async function handleUserMessage(
     console.warn('[handleUserMessage] normalization guard tripped', e);
   }
 
-  // AMA nutrition CTA
-  if (routerDecision.ama_nutrition_estimate) {
+  // AMA nutrition for macro queries (when route is AMA but query is about nutrition)
+  const isNutritionQuery = /\b(macros?|macro|calories|protein|carbs?|fat|nutrition)\b/i.test(message) && /\b(4|eggs?|oatmeal|steak|chicken|bread)\b/i.test(message);
+  if (routeDecision.route === 'AMA' && isNutritionQuery) {
     try {
       const { processNutrition } = await import('../nutrition/unifiedPipeline');
       
@@ -179,26 +209,39 @@ export async function handleUserMessage(
     }
   }
 
-  // Step 3: Select model (with personality router hints)
-  const modelSelection: ModelSelection = selectModel({
-    intent: routerDecision.intent,
-    intentConfidence: routerDecision.confidence || 0.8,
-    messageLength: message.length,
-    requiresStructuredOutput: shouldTriggerRole(routerDecision.intent),
-    forceOpenAI: false, // routerDecision handles model selection
-    needsWeb: routerDecision.route_to === 'ama' && routerDecision.use_gemini,
-    wantsLinks: false,
-    depth: 'brief',
-    hints: {
-      use_gemini: routerDecision.use_gemini,
-      confidence: routerDecision.confidence || 0.8,
-      reason: routerDecision.reason
-    }
-  });
+  // Step 3: Select model based on new routing
+  let modelSelection: ModelSelection;
+  if (routeDecision.route === 'TMWYA') {
+    // TMWYA uses OpenAI with function calling
+    modelSelection = {
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+      temperature: 0.1,
+      maxTokens: 1000,
+      functions: [TMWYA_TOOL]
+    } as any;
+  } else if (routeDecision.route === 'AMA' && used_web) {
+    // AMA with web search uses Gemini
+    modelSelection = {
+      provider: 'gemini',
+      model: 'gemini-2.5-flash',
+      temperature: 0.2,
+      maxTokens: 2000,
+      tools: [{ google_search: {} }]
+    } as any;
+  } else {
+    // AMA without web uses OpenAI
+    modelSelection = {
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+      temperature: 0.3,
+      maxTokens: 1000
+    } as any;
+  }
 
   const cost = estimateCost(modelSelection);
   console.log('[handleUserMessage] Model selected:', getModelDisplayName(modelSelection), `(~$${cost.toFixed(4)})`);
-  console.info('[handleUserMessage] Router decision used:', routerDecision ? 'yes' : 'no');
+  console.info('[handleUserMessage] Router decision used: yes, grounded:', used_web);
 
   // Step 4: Check if we should trigger a role
   let roleData: any = null;
@@ -209,15 +252,17 @@ export async function handleUserMessage(
     // roleData = await executeRole(routerDecision.intent, message, context);
   }
 
-  // Step 5: Build system prompt with user context
-  // All intents now route through swarm system (including general → personality swarm)
+  // Step 5: Build system prompt with user context and preferences
   let systemPrompt: string;
   let swarm: any = null;
 
   try {
     const { getSwarmForIntent, buildSwarmPrompt } = await import('../swarm/loader');
 
-    swarm = await getSwarmForIntent(routerDecision.intent);
+    // Use AMA intent for all routes (TMWYA uses function calling, not swarm)
+    const intentForSwarm = routeDecision.route === 'AMA' ? 'general' : 'general';
+
+    swarm = await getSwarmForIntent(intentForSwarm);
 
     if (!swarm) {
       // No swarm matched; force-load personality swarm as fallback
@@ -228,6 +273,10 @@ export async function handleUserMessage(
     if (swarm) {
       console.log(`[handleUserMessage] Using swarm: ${swarm.swarm_name}`);
       systemPrompt = await buildSwarmPrompt(swarm, context.userContext);
+      // Inject user preferences
+      if (sysPrefs) {
+        systemPrompt += '\n\n' + sysPrefs;
+      }
     } else {
       throw new Error('Personality swarm not configured');
     }

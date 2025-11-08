@@ -988,6 +988,35 @@ export const ChatPat: React.FC = () => {
               };
             }
 
+            // Check for TMWYA roleData
+            if (result.roleData?.type === 'tmwya.verify') {
+              const p = result.roleData;
+              console.log('[ChatPat] TMWYA verify detected, creating message with roleData:', p);
+
+              // Add the verification card message
+              const verifyMessage: ChatMessage = {
+                id: crypto.randomUUID(),
+                text: '', // No text, rendered as card
+                isUser: false,
+                timestamp: new Date(),
+                roleData: {
+                  type: 'tmwya.verify',
+                  view: p.view,
+                  items: p.items,
+                  totals: p.totals,
+                  tef: p.tef,
+                  tdee: p.tdee
+                }
+              };
+
+              setMessages(prev => prev.filter(m => m.id && !m.id.startsWith('thinking-')).concat(verifyMessage));
+              setIsSpeaking(false);
+              setIsThinking(false);
+              setIsSending(false);
+              setStatusText('');
+              return;
+            }
+
             // Combine metadata
             const combinedMeta = macroMetadata || citationMetadata || nutritionMetadata
               ? { ...macroMetadata, ...citationMetadata, ...nutritionMetadata }
