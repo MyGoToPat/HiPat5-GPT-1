@@ -1,22 +1,34 @@
 function cosine(a:number[], b:number[]){ let d=0,na=0,nb=0; for(let i=0;i<a.length;i++){d+=a[i]*b[i];na+=a[i]*a[i];nb+=b[i]*b[i];} return d/(Math.sqrt(na)*Math.sqrt(nb)); }
 
 export async function embed(text:string){
-
-  const r = await fetch("/functions/v1/embed", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ text })});
-
-  const j = await r.json(); return j.embedding;
-
+  try {
+    const r = await fetch("/functions/v1/embed", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ text })});
+    if (!r.ok) {
+      console.warn('[semanticRouter] Embed function failed:', r.status);
+      return [];
+    }
+    const j = await r.json();
+    return j.embedding || [];
+  } catch (err) {
+    console.error('[semanticRouter] Embed exception:', err);
+    return [];
+  }
 }
 
 export async function decideRoute(prompt:string, routes:any[]){
 
   const q = await embed(prompt);
+  
+  // If embedding failed, fallback to AMA
+  if (!q.length) {
+    return { route: "AMA", confidence: "low", sim: 0, hi: 0.85, mid: 0.60, why: "Embedding failed, defaulting to AMA" };
+  }
 
   let best = { name:"AMA", sim:-1, hi:0.85, mid:0.60, why:"Searching my knowledge and the web for this." };
 
   for (const r of routes){
 
-    if (!r.embedding) continue;
+    if (!r.embedding || !r.embedding.length) continue;
 
     const sim = cosine(q, r.embedding);
 

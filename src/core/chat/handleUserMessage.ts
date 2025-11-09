@@ -102,11 +102,13 @@ export async function handleUserMessage(
 
   // Fast path for trivial non-factual chat
   if (message.split(/\s+/).length < 12 && !TRIGGER_WORDS.test(message)) {
-    routeDecision = { route: 'AMA', confidence: 'low', sim: 0, hi: 0.85, mid: 0.60, why: 'Fast path: trivial query' };
+    routeDecision = { route: 'AMA', confidence: 'low', sim: 0, hi: 0.85, mid: 0.60, why: 'Fast path: trivial query', intent: 'ama' };
     used_web = false;
   } else {
     // Full semantic routing
     routeDecision = await decideRoute(message, getCachedRoutes());
+    // Map route to intent
+    routeDecision.intent = routeDecision.route === 'TMWYA' ? 'meal_logging' : 'ama';
     used_web = routeDecision.route === 'AMA' && routeDecision.confidence !== 'low';
   }
 
@@ -160,9 +162,9 @@ export async function handleUserMessage(
       // Determine if we should show the log button
       // food_question → info-only (show Edit/Cancel, but still allow logging)
       // meal_logging → full logging mode (show Log/Edit/Cancel)
-      const showLogButton = routerDecision.intent === 'meal_logging';
+      const showLogButton = routeDecision.intent === 'meal_logging';
 
-      console.log(`[nutrition] Intent: ${routerDecision.intent}, showLogButton: ${showLogButton}`);
+      console.log(`[nutrition] Intent: ${routeDecision.intent}, showLogButton: ${showLogButton}`);
       
       const pipelineResult = await processNutrition({
         message,
@@ -184,8 +186,8 @@ export async function handleUserMessage(
 
         const result = {
           response: summaryText,
-          intent: routerDecision.intent,
-          intentConfidence: routerDecision.confidence || 0.8,
+          intent: routeDecision.intent,
+          intentConfidence: routeDecision.confidence || 0.8,
           modelUsed: 'nutrition-unified',
           estimatedCost: 0,
           roleData: null,
@@ -243,13 +245,23 @@ export async function handleUserMessage(
   console.log('[handleUserMessage] Model selected:', getModelDisplayName(modelSelection), `(~$${cost.toFixed(4)})`);
   console.info('[handleUserMessage] Router decision used: yes, grounded:', used_web);
 
+  // Orchestrator tool separation logging
+  const has_functionDecls = !!modelSelection.functions?.length;
+  const has_google_search = !!modelSelection.tools?.some((t: any) => t.google_search);
+  console.info('[orchestrator]', {
+    route: routeDecision.route,
+    used_web,
+    has_functionDecls,
+    has_google_search
+  });
+
   // Step 4: Check if we should trigger a role
   let roleData: any = null;
 
-  if (shouldTriggerRole(routerDecision.intent)) {
+  if (shouldTriggerRole(routeDecision.intent)) {
     // TODO: Load role manifest and execute role handler
-    console.log('[handleUserMessage] Role trigger needed:', routerDecision.intent);
-    // roleData = await executeRole(routerDecision.intent, message, context);
+    console.log('[handleUserMessage] Role trigger needed:', routeDecision.intent);
+    // roleData = await executeRole(routeDecision.intent, message, context);
   }
 
   // Step 5: Build system prompt with user context and preferences
@@ -293,7 +305,7 @@ export async function handleUserMessage(
   }
 
   // Step 5.5: AMA fallback for meal logging when TMWYA not available
-  if (routerDecision.intent === 'meal_logging' && routerDecision.confidence >= 0.5) {
+  if (routeDecision.intent === 'meal_logging' && routeDecision.confidence >= 0.5) {
     try {
       const { portionResolver } = await import('../../agents/shared/nutrition/portionResolver');
       const { macroLookup } = await import('../../agents/shared/nutrition/macroLookup');
@@ -368,8 +380,8 @@ Please acknowledge this meal logging and provide a brief summary.`;
 
   return {
     response: assistantText,
-    intent: routerDecision.intent,
-    intentConfidence: routerDecision.confidence || 0.8,
+    intent: routeDecision.intent,
+    intentConfidence: routeDecision.confidence || 0.8,
     modelUsed: getModelDisplayName(modelSelection),
     estimatedCost: cost,
     roleData,
@@ -526,4 +538,3 @@ async function callLLM(params: LLMCallParams): Promise<{ message: string; tool_c
   }
   return { message: data.message, tool_calls: data.tool_calls, raw_data: data };
 }
-

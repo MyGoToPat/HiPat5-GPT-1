@@ -1,4 +1,3 @@
-import { createClient } from "@supabase/supabase-js";
 import type { MacroItem, MealTotals, TefBreakdown, TdeeResult } from "../shared/nutrition/types";
 
 type VerifyView = {

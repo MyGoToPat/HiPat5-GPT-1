@@ -6,14 +6,8 @@
  * DB is the single source of truth - no file fallbacks.
  */
 
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '../../lib/supabase';
 import { loadPersonalityFromDB } from './promptLoader';
-
-// Create DB client for personality loading
-const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL,
-  import.meta.env.VITE_SUPABASE_ANON_KEY
-);
 
 /**
  * Load personality prompts from DB
