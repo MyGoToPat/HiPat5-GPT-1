@@ -9,31 +9,58 @@ function cosine(a: number[], b: number[]) {
 }
 
 async function embedText(text: string): Promise<number[]> {
-  const r = await fetch("/functions/v1/embed", {
-    method:"POST", headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ text })
-  });
-  const j = await r.json();
-  return j.embedding;
+  try {
+    const r = await fetch("/functions/v1/embed", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ text })
+    });
+    if (!r.ok) {
+      console.warn('[preferences] Embed function failed:', r.status);
+      return [];
+    }
+    const j = await r.json();
+    return j.embedding || [];
+  } catch (err) {
+    console.error('[preferences] Embed exception:', err);
+    return [];
+  }
 }
 
 export async function rankTopPreferences(userId: string, query: string, supabase: any, k=3): Promise<RankedPref[]> {
-  const { data } = await supabase
-    .from("user_preferences")
-    .select("id,preference_text")
-    .eq("user_id", userId);
+  try {
+    const { data, error } = await supabase
+      .from('user_preferences')
+      .select('preference_text')
+      .eq('user_id', userId);
 
-  if (!data?.length) return [];
+    if (error) {
+      console.error('[preferences] Query error:', {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint
+      });
+      // Return empty array on error instead of crashing
+      return [];
+    }
 
-  const qVec = await embedText(query);
+    if (!data?.length) return [];
 
-  const prefVecs = await Promise.all(data.map(d => embedText(d.preference_text)));
+    const qVec = await embedText(query);
+    if (!qVec.length) return []; // Embedding failed
 
-  const ranked = data.map((p, i) => ({ ...p, score: cosine(qVec, prefVecs[i]) }));
+    const prefVecs = await Promise.all(data.map(d => embedText(d.preference_text)));
+    if (prefVecs.some(v => !v.length)) return []; // Some embeddings failed
 
-  ranked.sort((a,b)=>b.score-a.score);
+    const ranked = data.map((p, i) => ({ id: '', preference_text: p.preference_text, score: cosine(qVec, prefVecs[i]) }));
 
-  return ranked.slice(0,k);
+    ranked.sort((a,b)=>b.score-a.score);
+
+    return ranked.slice(0,k);
+  } catch (err) {
+    console.error('[preferences] Exception in rankTopPreferences:', err);
+    return [];
+  }
 }
 
 export function prefsToSystemLine(prefs: RankedPref[]): string {
