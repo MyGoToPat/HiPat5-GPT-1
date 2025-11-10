@@ -3,7 +3,7 @@
  * Coordinates intent detection, model selection, role execution, and LLM response
  */
 
-import { detectIntent, shouldTriggerRole } from '../router/intentRouter';
+import { detectIntent, shouldTriggerRole, decideAmaChannel } from '../router/intentRouter';
 import { selectModel, estimateCost, getModelDisplayName, type ModelSelection } from '../router/modelRouter';
 import { type UserContext } from '../personality/patSystem';
 import { ensureChatSession } from './sessions';
@@ -96,6 +96,19 @@ export async function handleUserMessage(
   const prefs = await rankTopPreferences(context.userId, message, supabase, 3);
   const sysPrefs = prefsToSystemLine(prefs);
 
+  // Check for memory queries and inject context from structured data
+  const { detectMemoryQuery, searchMealHistory, buildMemoryContext } = await import('../memory/chatContext');
+  const memoryQuery = detectMemoryQuery(message);
+  let memoryContext = '';
+  
+  if (memoryQuery.isMemoryQuery && memoryQuery.type === 'meal' && memoryQuery.searchTerm) {
+    const results = await searchMealHistory(context.userId, memoryQuery.searchTerm);
+    memoryContext = buildMemoryContext(results);
+    if (memoryContext) {
+      console.info('[memory] Injected context:', memoryContext);
+    }
+  }
+
   // Step 1.5: Semantic routing with fast path
   let routeDecision: any = null;
   let used_web = false;
@@ -103,13 +116,21 @@ export async function handleUserMessage(
   // Fast path for trivial non-factual chat
   if (message.split(/\s+/).length < 12 && !TRIGGER_WORDS.test(message)) {
     routeDecision = { route: 'AMA', confidence: 'low', sim: 0, hi: 0.85, mid: 0.60, why: 'Fast path: trivial query', intent: 'ama' };
-    used_web = false;
+    // Use decideAmaChannel to determine web vs local for AMA
+    const channel = decideAmaChannel(message);
+    used_web = channel === 'ama-web';
   } else {
     // Full semantic routing
     routeDecision = await decideRoute(message, getCachedRoutes());
     // Map route to intent
     routeDecision.intent = routeDecision.route === 'TMWYA' ? 'meal_logging' : 'ama';
-    used_web = routeDecision.route === 'AMA' && routeDecision.confidence !== 'low';
+    // For AMA routes, use decideAmaChannel to determine web-first behavior
+    if (routeDecision.route === 'AMA') {
+      const channel = decideAmaChannel(message);
+      used_web = channel === 'ama-web';
+    } else {
+      used_web = false;
+    }
   }
 
   console.info('[router]', { route: routeDecision.route, sim: routeDecision.sim, hi: routeDecision.hi, mid: routeDecision.mid, why: routeDecision.why, used_web });
@@ -117,28 +138,37 @@ export async function handleUserMessage(
   // Early branch: Route to TMWYA pipeline for meal logging
   if (routeDecision.route === 'TMWYA') {
     try {
-      const tmwyaInput = {
-        userMessage: message,
-        source: 'text' as const,
-        userId: context.userId
-      };
+      // Use processNutrition for TMWYA to get proper MealVerifyCard format
+      const { processNutrition } = await import('../nutrition/unifiedPipeline');
+      
+      const pipelineResult = await processNutrition({
+        message,
+        userId: context.userId,
+        sessionId,
+        showLogButton: true // TMWYA always shows log button
+      });
+      
+      if (pipelineResult.success && pipelineResult.roleData) {
+        console.info('[tmwya] resolved → MealVerifyCard ready', pipelineResult.roleData.view?.totals);
 
-      const pipelineResult = await runTMWYAPipeline(tmwyaInput);
-
-      if (pipelineResult.ok && pipelineResult.normalizedMeal) {
-        const mealData = pipelineResult.normalizedMeal;
-
-        console.info('[tmwya] resolved → pendingMeal set', mealData.totals);
-
-        // Return message with roleData that triggers ChatPat verification
-        return {
+        // Return message with full roleData for MealVerifyCard
+        const response = {
           response: "I've prepared your meal. Please verify.",
-          roleData: {
-            type: 'tmwya.verify',
-            items: mealData.items,
-            totals: mealData.totals
-          }
+          intent: routeDecision.intent,
+          intentConfidence: routeDecision.confidence || 0.8,
+          modelUsed: 'tmwya-pipeline',
+          estimatedCost: 0,
+          roleData: pipelineResult.roleData, // Full structure: view, items, totals, tef, tdee
+          toolCalls: null,
+          rawData: null
         };
+        
+        console.info("[roledata]", {
+          type: response.roleData?.type,
+          items: Array.isArray(response.roleData?.items) ? response.roleData.items.length : null
+        });
+        
+        return response;
       }
     } catch (error) {
       console.error('[handleUserMessage] TMWYA pipeline failed:', error);
@@ -154,53 +184,50 @@ export async function handleUserMessage(
   }
 
   // AMA nutrition for macro queries (when route is AMA but query is about nutrition)
-  const isNutritionQuery = /\b(macros?|macro|calories|protein|carbs?|fat|nutrition)\b/i.test(message) && /\b(4|eggs?|oatmeal|steak|chicken|bread)\b/i.test(message);
+  const mentionsMacros = /\b(macros?|macro|calories|protein|carbs?|fat|nutrition|kcals?)\b/i.test(message);
+  const mealLoggingCue = /\b(i\s+(ate|had|logged)|log\s+(this|my)\s+meal|ate|had)\b/i.test(message);
+  const foodIndicator = /\b(eggs?|egg|steak|ribeye|chicken|oatmeal|salad|burger|fries|sandwich|pizza|rice|smoothie|meal|breakfast|lunch|dinner)\b/i.test(message);
+  const isMealLoggingMessage = mealLoggingCue && foodIndicator;
+  const isNutritionQuery = mentionsMacros || isMealLoggingMessage;
+
   if (routeDecision.route === 'AMA' && isNutritionQuery) {
     try {
       const { processNutrition } = await import('../nutrition/unifiedPipeline');
-      
+
       // Determine if we should show the log button
       // food_question → info-only (show Edit/Cancel, but still allow logging)
       // meal_logging → full logging mode (show Log/Edit/Cancel)
-      const showLogButton = routeDecision.intent === 'meal_logging';
+      const showLogButton = routeDecision.intent === 'meal_logging' || isMealLoggingMessage;
 
       console.log(`[nutrition] Intent: ${routeDecision.intent}, showLogButton: ${showLogButton}`);
-      
+
       const pipelineResult = await processNutrition({
         message,
         userId: context.userId,
         sessionId,
         showLogButton
       });
-      
+
       if (pipelineResult.success && pipelineResult.roleData) {
-        // Create a summary text response with verification CTA
-        const items = pipelineResult.roleData.items || [];
-        const totals = pipelineResult.roleData.totals || {};
-
-        let summaryText = `Based on standard nutritional data:\n`;
-        items.forEach((item: any, index: number) => {
-          summaryText += `${index + 1}. ${item.name}: ${item.calories || 0} calories, ${item.protein_g || 0}g protein, ${item.carbs_g || 0}g carbs, ${item.fat_g || 0}g fat\n`;
-        });
-        summaryText += `\nTotal: ${totals.calories || 0} calories, ${totals.protein_g || 0}g protein, ${totals.carbs_g || 0}g carbs, ${totals.fat_g || 0}g fat`;
-
-        const result = {
-          response: summaryText,
+        // Return full roleData for MealVerifyCard rendering (same as TMWYA path)
+        const response = {
+          response: "I've prepared the nutrition data. Please verify.",
           intent: routeDecision.intent,
           intentConfidence: routeDecision.confidence || 0.8,
           modelUsed: 'nutrition-unified',
           estimatedCost: 0,
-          roleData: null,
+          roleData: pipelineResult.roleData, // Full structure: view, items, totals, tef, tdee
           toolCalls: null,
-          rawData: {
-            ama_nutrition_estimate: true,
-            items: items, // Attach parsed items for Verify & Log button
-            totals: totals
-          }
+          rawData: null
         };
 
-        console.log('[nutrition] AMA nutrition response prepared with verification CTA');
-        return result;
+        console.info("[roledata]", {
+          type: response.roleData?.type,
+          items: Array.isArray(response.roleData?.items) ? response.roleData.items.length : null
+        });
+
+        console.log('[nutrition] AMA nutrition response prepared with MealVerifyCard');
+        return response;
       } else {
         console.warn('[nutrition] Pipeline failed, falling back to general chat:', pipelineResult.error);
         // Fall through to general chat/AMA fallback below
@@ -213,8 +240,15 @@ export async function handleUserMessage(
 
   // Step 3: Select model based on new routing
   let modelSelection: ModelSelection;
+  let provider = "openai";
+  let grounded = false;
+  let has_google_search = false;
+
   if (routeDecision.route === 'TMWYA') {
     // TMWYA uses OpenAI with function calling
+    provider = "openai";
+    grounded = false;
+    has_google_search = false;
     modelSelection = {
       provider: 'openai',
       model: 'gpt-4o-mini',
@@ -222,17 +256,38 @@ export async function handleUserMessage(
       maxTokens: 1000,
       functions: [TMWYA_TOOL]
     } as any;
-  } else if (routeDecision.route === 'AMA' && used_web) {
-    // AMA with web search uses Gemini
-    modelSelection = {
-      provider: 'gemini',
-      model: 'gemini-2.5-flash',
-      temperature: 0.2,
-      maxTokens: 2000,
-      tools: [{ google_search: {} }]
-    } as any;
+  } else if (routeDecision.route === 'AMA') {
+    // AMA: web-first by default, unless user opts out
+    const channel = decideAmaChannel(message);
+    if (channel === 'ama-web') {
+      // Web-connected path: Gemini + search
+      provider = "gemini";
+      grounded = true;
+      has_google_search = true;
+      modelSelection = {
+        provider: 'gemini',
+        model: 'gemini-2.5-flash',
+        temperature: 0.2,
+        maxTokens: 2000,
+        tools: [{ google_search: {} }]
+      } as any;
+    } else {
+      // Local path: OpenAI, no search
+      provider = "openai";
+      grounded = false;
+      has_google_search = false;
+      modelSelection = {
+        provider: 'openai',
+        model: 'gpt-4o-mini',
+        temperature: 0.3,
+        maxTokens: 1000
+      } as any;
+    }
   } else {
-    // AMA without web uses OpenAI
+    // Fallback: OpenAI
+    provider = "openai";
+    grounded = false;
+    has_google_search = false;
     modelSelection = {
       provider: 'openai',
       model: 'gpt-4o-mini',
@@ -243,14 +298,15 @@ export async function handleUserMessage(
 
   const cost = estimateCost(modelSelection);
   console.log('[handleUserMessage] Model selected:', getModelDisplayName(modelSelection), `(~$${cost.toFixed(4)})`);
-  console.info('[handleUserMessage] Router decision used: yes, grounded:', used_web);
+  console.info('[handleUserMessage] Router decision used: yes, grounded:', grounded, 'provider:', provider);
 
   // Orchestrator tool separation logging
-  const has_functionDecls = !!modelSelection.functions?.length;
-  const has_google_search = !!modelSelection.tools?.some((t: any) => t.google_search);
+  const has_functionDecls = !!(modelSelection as any).functions?.length;
   console.info('[orchestrator]', {
     route: routeDecision.route,
-    used_web,
+    used_web: grounded,
+    provider,
+    grounded,
     has_functionDecls,
     has_google_search
   });
@@ -288,6 +344,10 @@ export async function handleUserMessage(
       // Inject user preferences
       if (sysPrefs) {
         systemPrompt += '\n\n' + sysPrefs;
+      }
+      // Inject memory context if available
+      if (memoryContext) {
+        systemPrompt += '\n\n' + memoryContext;
       }
     } else {
       throw new Error('Personality swarm not configured');
@@ -346,7 +406,7 @@ Please acknowledge this meal logging and provide a brief summary.`;
   });
 
   let llmResponse = typeof llmResult === 'string' ? llmResult : llmResult.message;
-  const toolCalls = typeof llmResult === 'object' ? llmResult.tool_calls : null;
+  const toolCalls = typeof llmResult === 'object' && llmResult.tool_calls ? { count: llmResult.tool_calls.length } : null; // Sanitized: just count
   const rawData = typeof llmResult === 'object' ? llmResult.raw_data : null;
 
   // Step 6.5: Execute post-agents if swarm has them (personality polish)

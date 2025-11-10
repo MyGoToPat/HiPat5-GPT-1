@@ -55,7 +55,8 @@ export async function getChatSessions(userId: string, limit = 20): Promise<ChatS
 export async function addChatMessage(
   sessionId: string,
   role: 'user' | 'assistant' | 'system',
-  content: string
+  content: string,
+  metadata?: any
 ): Promise<ChatMessage> {
   // Generate client-side UUID to prevent conflicts
   const messageId = crypto.randomUUID();
@@ -67,6 +68,7 @@ export async function addChatMessage(
       session_id: sessionId,
       role,
       content,
+      metadata: metadata || {},
       created_at: new Date().toISOString()
     })
     .select()
@@ -100,7 +102,11 @@ export async function getChatMessages(sessionId: string): Promise<ChatMessage[]>
     return [];
   }
 
-  return data || [];
+  // Restore roleData from metadata if present
+  return (data || []).map(msg => ({
+    ...msg,
+    roleData: msg.metadata?.roleData || msg.roleData
+  }));
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
@@ -143,14 +149,14 @@ export interface ChatHistoryItem {
 /**
  * Get user's chat history with previews (excluding deleted)
  */
-export async function getChatHistory(userId: string): Promise<ChatHistoryItem[]> {
+export async function getChatHistory(userId: string, limit = 20): Promise<ChatHistoryItem[]> {
   const { data: sessions, error } = await supabase
     .from('chat_sessions')
     .select('id, title, created_at, last_activity_at')
     .eq('user_id', userId)
     .is('deleted_at', null)
     .order('last_activity_at', { ascending: false })
-    .limit(20);
+    .limit(limit);
 
   if (error) throw error;
 
@@ -197,11 +203,75 @@ export async function getChatHistory(userId: string): Promise<ChatHistoryItem[]>
     );
 }
 
+export interface ChatHistoryGroup {
+  date: string; // YYYY-MM-DD
+  displayDate: string; // "Sunday, Nov 9, 2025"
+  chats: ChatHistoryItem[];
+}
+
+/**
+ * Get user's chat history grouped by calendar day in their timezone
+ */
+export async function getChatHistoryGrouped(userId: string, limit = 30): Promise<ChatHistoryGroup[]> {
+  // Get user timezone
+  const { data: prefs } = await supabase
+    .from('user_preferences')
+    .select('timezone')
+    .eq('user_id', userId)
+    .maybeSingle();
+  
+  const timezone = prefs?.timezone || 'America/New_York';
+
+  // Fetch all sessions
+  const sessions = await getChatHistory(userId, limit);
+
+  // Group by calendar day using Intl.DateTimeFormat for safe parsing
+  const grouped = new Map<string, ChatHistoryItem[]>();
+  
+  sessions.forEach(chat => {
+    const date = new Date(chat.updated_at);
+    
+    // Use formatToParts to get YYYY-MM-DD safely
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).formatToParts(date);
+    
+    const year = parts.find(p => p.type === 'year')?.value;
+    const month = parts.find(p => p.type === 'month')?.value;
+    const day = parts.find(p => p.type === 'day')?.value;
+    const dateKey = `${year}-${month}-${day}`;
+    
+    if (!grouped.has(dateKey)) {
+      grouped.set(dateKey, []);
+    }
+    grouped.get(dateKey)!.push(chat);
+  });
+
+  // Convert to array and sort by date (newest first)
+  return Array.from(grouped.entries())
+    .map(([date, chats]) => ({
+      date,
+      displayDate: new Date(date + 'T12:00:00').toLocaleDateString('en-US', { 
+        weekday: 'long', 
+        month: 'short', 
+        day: 'numeric', 
+        year: 'numeric' 
+      }),
+      chats: chats.sort((a, b) => 
+        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+      )
+    }))
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
 /**
  * Soft delete a chat session
  */
 export async function deleteChatSession(sessionId: string, userId: string): Promise<void> {
-  const { error } = await supabase
+  const { error} = await supabase
     .from('chat_sessions')
     .update({ deleted_at: new Date().toISOString() })
     .eq('id', sessionId)

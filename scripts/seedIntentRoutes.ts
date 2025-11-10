@@ -9,21 +9,13 @@ const SB_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const supabase = createClient(SB_URL, SB_SERVICE_ROLE_KEY);
 
 async function embed(text: string): Promise<number[]> {
-
-  const res = await fetch(`${SB_URL}/functions/v1/embed`, {
-
-    method:"POST",
-
-    headers:{ "Content-Type":"application/json", "Authorization":`Bearer ${SB_SERVICE_ROLE_KEY}` },
-
-    body: JSON.stringify({ text })
-
+  const { data, error } = await supabase.functions.invoke('embed', {
+    body: { texts: [text] }
   });
-
-  const j = await res.json();
-
-  return j.embedding;
-
+  if (error) throw error;
+  const vecs = data?.vectors ?? data?.embeddings ?? data?.data;
+  if (!vecs || !Array.isArray(vecs) || !vecs[0]) throw new Error('embed_invalid_response');
+  return vecs[0];
 }
 
 (async function main(){

@@ -8,30 +8,15 @@ function cosine(a: number[], b: number[]) {
   return dot/(Math.sqrt(na)*Math.sqrt(nb));
 }
 
-async function embedText(text: string): Promise<number[]> {
-  try {
-    const r = await fetch("/functions/v1/embed", {
-      method:"POST", headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ text })
-    });
-    if (!r.ok) {
-      console.warn('[preferences] Embed function failed:', r.status);
-      return [];
-    }
-    const j = await r.json();
-    return j.embedding || [];
-  } catch (err) {
-    console.error('[preferences] Embed exception:', err);
-    return [];
-  }
-}
+import { getEmbeddings } from '@/core/router/embed';
 
 export async function rankTopPreferences(userId: string, query: string, supabase: any, k=3): Promise<RankedPref[]> {
   try {
     const { data, error } = await supabase
       .from('user_preferences')
       .select('preference_text')
-      .eq('user_id', userId);
+      .eq('user_id', userId)
+      .limit(10);
 
     if (error) {
       console.error('[preferences] Query error:', {
@@ -46,13 +31,36 @@ export async function rankTopPreferences(userId: string, query: string, supabase
 
     if (!data?.length) return [];
 
-    const qVec = await embedText(query);
-    if (!qVec.length) return []; // Embedding failed
+    // Embed the query ONCE
+    let qVec: number[] = [];
+    try {
+      const vectors = await getEmbeddings([query]);
+      qVec = vectors[0] || [];
+    } catch (embedError) {
+      console.warn('[preferences] Failed to embed query, skipping ranking:', embedError);
+      return [];
+    }
+    if (!qVec.length) return [];
 
-    const prefVecs = await Promise.all(data.map(d => embedText(d.preference_text)));
-    if (prefVecs.some(v => !v.length)) return []; // Some embeddings failed
+    // Embed preferences separately
+    const prefTexts = data.map(d => d.preference_text);
+    let prefVecs: number[][] = [];
+    try {
+      prefVecs = prefTexts.length ? await getEmbeddings(prefTexts) : [];
+    } catch (embedError) {
+      console.warn('[preferences] Failed to embed preferences, skipping ranking:', embedError);
+      return [];
+    }
 
-    const ranked = data.map((p, i) => ({ id: '', preference_text: p.preference_text, score: cosine(qVec, prefVecs[i]) }));
+    if (!prefVecs.length || prefVecs.length !== prefTexts.length) return [];
+
+    const ranked = data
+      .map((p, i) => ({
+        id: '',
+        preference_text: p.preference_text,
+        score: cosine(qVec, prefVecs[i])
+      }))
+      .filter(item => Number.isFinite(item.score));
 
     ranked.sort((a,b)=>b.score-a.score);
 

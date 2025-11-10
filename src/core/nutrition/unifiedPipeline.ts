@@ -130,6 +130,154 @@ function inferMealSlotFromTime(): 'breakfast' | 'lunch' | 'dinner' | 'snack' {
 }
 
 /**
+ * Global nutrition cache lookup
+ */
+async function lookupGlobalCache(normalized: any): Promise<any> {
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('global_nutrition_cache')
+      .select('*')
+      .eq('normalized_name', normalized.name.toLowerCase().trim())
+      .eq('brand', normalized.brand || null)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (error && error.code !== 'PGRST116') { // PGRST116 = no rows found
+      console.warn('[global-cache] Query error:', error);
+      return null;
+    }
+
+    if (data) {
+      console.log(`[global-cache] Found cached data for "${normalized.name}"`);
+      return {
+        name: data.normalized_name,
+        serving_label: data.serving_label,
+        grams_per_serving: data.grams_per_serving,
+        macros: {
+          kcal: data.calories,
+          protein_g: data.protein_g,
+          carbs_g: data.carbs_g,
+          fat_g: data.fat_g,
+          fiber_g: data.fiber_g
+        },
+        confidence: data.confidence,
+        source: data.source,
+        notes: 'Data from global nutrition cache'
+      };
+    }
+    return null;
+  } catch (e) {
+    console.warn('[global-cache] Exception:', e);
+    return null;
+  }
+}
+
+/**
+ * Brand Resolver using Gemini - final fallback for unknown foods
+ */
+async function lookupBrandResolver(normalized: any): Promise<any> {
+  try {
+    const supabase = getSupabase();
+
+    // Create a specific prompt for brand resolution
+    const prompt = `You are a nutrition database expert. Find the verifiable nutritional information for this food item.
+
+Food: ${normalized.name}${normalized.brand ? ` (${normalized.brand})` : ''}${normalized.serving_label ? ` - ${normalized.serving_label}` : ''}${normalized.size_label ? ` ${normalized.size_label}` : ''}
+
+IMPORTANT: Search for official sources like USDA, FDA, or brand websites. Return ONLY valid JSON in this exact format:
+{"calories": number, "protein_g": number, "carbs_g": number, "fat_g": number, "fiber_g": number}
+
+If you cannot find reliable data, return: {"error": "not_found"}
+Do not make up numbers. Only return verified nutritional data.`;
+
+    const { data, error } = await supabase.functions.invoke('gemini-chat', {
+      body: {
+        prompt,
+        temperature: 0.1, // Low temperature for accuracy
+        max_tokens: 500
+      }
+    });
+
+    if (error || !data?.ok) {
+      console.warn('[brand-resolver] Gemini call failed:', error);
+      return null;
+    }
+
+    const responseText = data.text || '';
+    console.log('[brand-resolver] Gemini response:', responseText);
+
+    // Try to parse JSON
+    const parsed = safeJsonParse(responseText);
+    if (!parsed || parsed.error === 'not_found') {
+      console.log('[brand-resolver] No reliable data found for:', normalized.name);
+      return null;
+    }
+
+    // Validate we have required fields
+    if (typeof parsed.calories !== 'number' || typeof parsed.protein_g !== 'number' ||
+        typeof parsed.carbs_g !== 'number' || typeof parsed.fat_g !== 'number') {
+      console.warn('[brand-resolver] Invalid response format:', parsed);
+      return null;
+    }
+
+    const result = {
+      name: normalized.name,
+      serving_label: normalized.serving_label || 'serving',
+      grams_per_serving: 100, // Standard assumption
+      macros: {
+        kcal: parsed.calories,
+        protein_g: parsed.protein_g,
+        carbs_g: parsed.carbs_g,
+        fat_g: parsed.fat_g,
+        fiber_g: parsed.fiber_g || 0
+      },
+      confidence: 0.8, // Brand resolver confidence
+      source: 'brand_resolver',
+      notes: 'Data resolved by AI brand resolver'
+    };
+
+    // Cache the result for future use
+    try {
+      const cacheData = {
+        normalized_name: normalized.name.toLowerCase().trim(),
+        brand: normalized.brand || null,
+        serving_label: result.serving_label,
+        size_label: normalized.size_label || null,
+        grams_per_serving: result.grams_per_serving,
+        calories: result.macros.kcal,
+        protein_g: result.macros.protein_g,
+        carbs_g: result.macros.carbs_g,
+        fat_g: result.macros.fat_g,
+        fiber_g: result.macros.fiber_g,
+        source: 'brand_resolver',
+        confidence: result.confidence
+      };
+
+      const { error: cacheError } = await supabase
+        .from('global_nutrition_cache')
+        .insert(cacheData);
+
+      if (cacheError) {
+        console.warn('[brand-resolver] Failed to cache result:', cacheError);
+      } else {
+        console.log('[brand-resolver] Cached result for future lookups');
+      }
+    } catch (cacheErr) {
+      console.warn('[brand-resolver] Cache exception:', cacheErr);
+    }
+
+    console.log(`[brand-resolver] Successfully resolved "${normalized.name}"`);
+    return result;
+
+  } catch (e) {
+    console.warn('[brand-resolver] Exception:', e);
+    return null;
+  }
+}
+
+/**
  * OpenAI nutrition provider - fallback when Gemini is disabled
  */
 async function lookupOpenAI(normalized: any, userId?: string) {
@@ -206,61 +354,87 @@ async function lookupMacrosInCascade(items: any[], userId?: string): Promise<any
       is_branded: !!item.brand
     };
 
-    // ✅ Choose provider order based on brand status and Gemini availability
-    // Branded: brand map → gemini/openai → generic
-    // Whole foods: generic (USDA) → gemini/openai → openai (fallback)
-    const ORDER: (ProviderKey | 'openai')[] = normalized.is_branded
-      ? GEMINI_ENABLED ? ["brand", "gemini", "generic"] : ["brand", "openai", "generic"]  // Branded: brand map first
-      : GEMINI_ENABLED ? ["generic", "gemini"] : ["generic", "openai"];                   // Whole foods: USDA first, then fallback
+    // ✅ Check global cache FIRST (fastest lookup)
+    let macroResult = await lookupGlobalCache(normalized);
+    let providerUsed = 'global_cache';
 
-    let macroResult = null;
-    let providerUsed = 'none';
-    
-    // ✅ Try each provider in order
-    for (const key of ORDER) {
-      let providerFn = null;
+    if (macroResult) {
+      skillsFired.push('macro_lookup_global_cache');
+      console.log(`[nutrition] Global cache found macros for "${item.name}"`);
+    } else {
+      // ✅ Choose provider order based on brand status and Gemini availability
+      // Branded: brand map → gemini/openai → generic
+      // Whole foods: generic (USDA) → gemini/openai → brand resolver
+      const ORDER: (ProviderKey | 'openai' | 'brand_resolver')[] = normalized.is_branded
+        ? GEMINI_ENABLED ? ["brand", "gemini", "generic", "brand_resolver"] : ["brand", "openai", "generic", "brand_resolver"]  // Branded: brand map first
+        : GEMINI_ENABLED ? ["generic", "gemini", "brand_resolver"] : ["generic", "openai", "brand_resolver"];                   // Whole foods: USDA first, then fallback
 
-      if (key === 'openai') {
-        providerFn = lookupOpenAI;
-      } else {
-        providerFn = PROVIDERS[key];
+      // Always add brand_resolver as final fallback if not already included
+      if (!ORDER.includes('brand_resolver')) {
+        ORDER.push('brand_resolver');
       }
 
-      if (providerFn) {
-        try {
-          macroResult = await providerFn(normalized, userId);
-          if (macroResult && macroResult.macros && macroResult.macros.kcal > 0) {
-            providerUsed = key;
-            skillsFired.push(`macro_lookup_${key}`); // Track skill usage
-            console.log(`[nutrition] Provider ${key} found macros for "${item.name}"`);
-            break;
+      // ✅ Try each provider in order
+      for (const key of ORDER) {
+        let providerFn = null;
+
+        if (key === 'openai') {
+          providerFn = lookupOpenAI;
+          console.log(`[nutrition] trying openai provider for "${item.name}"`);
+        } else if (key === 'brand_resolver') {
+          providerFn = lookupBrandResolver;
+          console.log(`[nutrition] trying brand_resolver for "${item.name}"`);
+        } else {
+          providerFn = PROVIDERS[key];
+        }
+
+        if (providerFn) {
+          try {
+            macroResult = await providerFn(normalized, userId);
+            if (macroResult && macroResult.macros && macroResult.macros.kcal > 0) {
+              providerUsed = key;
+              skillsFired.push(`macro_lookup_${key}`); // Track skill usage
+              console.log(`[nutrition] Provider ${key} found macros for "${item.name}"`);
+              break;
+            }
+          } catch (err) {
+            console.error(`[nutrition] Provider ${key} error for "${item.name}":`, err);
+            continue;  // Try next provider
           }
-        } catch (err) {
-          console.error(`[nutrition] Provider ${key} error for "${item.name}":`, err);
-          continue;  // Try next provider
         }
       }
-    }
 
-    // ✅ Only use stub if ALL providers failed
-    if (!macroResult || !macroResult.macros || macroResult.macros.kcal === 0) {
-      console.warn(`[nutrition] All providers failed for "${item.name}", using stub`);
-      macroResult = {
-        name: item.name,
-        serving_label: item.unit || 'serving',
-        grams_per_serving: 100,
-        macros: {
-          kcal: 0,  // ✅ Show 0, not fake data
-          protein_g: 0,
-          carbs_g: 0,
-          fat_g: 0,
-          fiber_g: 0
-        },
-        confidence: 0.1,
-        source: 'stub',
-        notes: 'Unable to retrieve macro data. Please verify manually.'
-      };
-      providerUsed = 'stub';
+      // ✅ If still no result, try Brand Resolver as final fallback
+      if (!macroResult || !macroResult.macros || macroResult.macros.kcal === 0) {
+        console.log(`[nutrition] Trying Brand Resolver for "${item.name}"`);
+        macroResult = await lookupBrandResolver(normalized);
+        if (macroResult) {
+          providerUsed = 'brand_resolver';
+          skillsFired.push('macro_lookup_brand_resolver');
+          console.log(`[nutrition] Brand Resolver found macros for "${item.name}"`);
+        }
+      }
+
+      // ✅ Only use stub if ALL providers including Brand Resolver failed
+      if (!macroResult || !macroResult.macros || macroResult.macros.kcal === 0) {
+        console.warn(`[nutrition] All providers including Brand Resolver failed for "${item.name}", using stub`);
+        macroResult = {
+          name: item.name,
+          serving_label: item.unit || 'serving',
+          grams_per_serving: 100,
+          macros: {
+            kcal: 0,  // ✅ Show 0, not fake data
+            protein_g: 0,
+            carbs_g: 0,
+            fat_g: 0,
+            fiber_g: 0
+          },
+          confidence: 0.1,
+          source: 'stub',
+          notes: 'Unable to retrieve macro data. Please verify manually.'
+        };
+        providerUsed = 'stub';
+      }
     }
 
     // Add to results
@@ -294,6 +468,27 @@ async function lookupMacrosInCascade(items: any[], userId?: string): Promise<any
 }
 
 /**
+ * Fallback NLU parser when normalizer LLM fails or returns non-JSON
+ */
+function fallbackNLU(message: string): Array<{ name: string; amount: number | null; unit: string | null }> {
+  // Simple deterministic parser
+  // Extract food items by splitting on common separators
+  const cleanMsg = message.replace(/^(i ate|i had|ate|had)\s+/i, '').trim();
+  const items = cleanMsg.split(/,\s+| and | with | plus /i).map(item => {
+    const trimmed = item.trim();
+    // Extract quantity: "3 eggs" → amount: 3, name: "eggs"
+    const match = trimmed.match(/^(\d+(?:\.\d+)?)\s*(.+)$/);
+    if (match) {
+      return { name: match[2], amount: parseFloat(match[1]), unit: null };
+    }
+    return { name: trimmed, amount: null, unit: null };
+  }).filter(x => x.name.length > 0 && x.name !== 'a');
+  
+  console.log('[fallbackNLU] Parsed items:', items);
+  return items;
+}
+
+/**
  * Main unified nutrition pipeline
  * Used by both "food_question" (info) and "meal_logging" (log) intents
  */
@@ -303,6 +498,35 @@ export async function processNutrition(options: NutritionPipelineOptions): Promi
 
   try {
     console.log('[nutrition] Processing:', { message, userId, showLogButton });
+
+    // Dev override: return static test data
+    if (message.startsWith("dev:force verify")) {
+      return {
+        success: true,
+        roleData: {
+          type: 'tmwya.verify',
+          view: {
+            rows: [
+              { name: "big mac", quantity: 1, unit: "piece", calories: 219, protein_g: 9.1, carbs_g: 21, fat_g: 12, fiber_g: 0.3, editable: true },
+              { name: "large fries", quantity: 1, unit: "piece", calories: 323, protein_g: 3.8, carbs_g: 41, fat_g: 16, fiber_g: 3.5, editable: true }
+            ],
+            totals: { calories: 542, protein_g: 12.9, carbs_g: 62, fat_g: 28, fiber_g: 3.8 },
+            tef: { kcal: 54 },
+            tdee: { target_kcal: 2000, remaining_kcal: 1404, remaining_percentage: 70.2 },
+            meal_slot: "lunch",
+            eaten_at: new Date().toISOString(),
+            actions: ['CONFIRM_LOG', 'EDIT_ITEMS', 'CANCEL']
+          },
+          items: [
+            { name: "big mac", quantity: 1, unit: "piece", calories: 219, protein_g: 9.1, carbs_g: 21, fat_g: 12, fiber_g: 0.3 },
+            { name: "large fries", quantity: 1, unit: "piece", calories: 323, protein_g: 3.8, carbs_g: 41, fat_g: 16, fiber_g: 3.5 }
+          ],
+          totals: { calories: 542, protein_g: 12.9, carbs_g: 62, fat_g: 28, fiber_g: 3.8 },
+          tef: { kcal: 54 },
+          tdee: { target_kcal: 2000, remaining_kcal: 1404, remaining_percentage: 70.2 }
+        }
+      };
+    }
 
     // Step 1: Call normalizer LLM to parse meal text
     const supabase = getSupabase();
@@ -322,12 +546,12 @@ Rules:
     const { data: normalizerResponse, error: normalizerError } = await supabase.functions.invoke('openai-chat', {
       body: {
         messages: [
-          { role: 'system', content: normalizerPrompt },
+          { role: 'system', content: normalizerPrompt + '\n\nIMPORTANT: You MUST output ONLY valid JSON. No prose, no markdown, no explanations. Only JSON.' },
           { role: 'user', content: message }
         ],
         stream: false,
         userId,
-        temperature: 0.1,
+        temperature: 0.05, // Lower temp for stricter JSON
         model: 'gpt-4o-mini',
         provider: 'openai',
         response_format: { type: 'json_object' }  // ✅ FORCE JSON MODE
@@ -339,29 +563,31 @@ Rules:
     if (!normalizerError && normalizerResponse?.message) {
       // Try multiple response shape possibilities
       let responseText = normalizerResponse.choices?.[0]?.message?.content || normalizerResponse.message || '';
-      const parsed = safeJsonParse(responseText);
-
-      if (parsed && Array.isArray(parsed.items)) {
-        parsedItems = parsed.items;
-        console.log('[nutrition] Normalizer parsed items:', parsedItems);
-
-        // Food search skill fired (meal parsing)
-        if (parsedItems.length > 0) {
-          skillsFired.push('food_search');
-        }
+      
+      // CRITICAL: If response is plain text (not JSON), use fallback NLU
+      if (!responseText.trim().startsWith('{') && !responseText.trim().startsWith('[')) {
+        console.warn('[nutrition] Normalizer returned non-JSON, using fallback NLU:', responseText);
+        parsedItems = fallbackNLU(message);
       } else {
-        console.warn('[nutrition] Normalizer returned invalid JSON, falling back to naive split');
-        // Fixed naive split: don't break decimals (split on punctuation followed by space)
-        parsedItems = message.split(/[.,]\s+| and | with | plus /i)
-          .map(s => ({ name: s.trim(), amount: null as number | null, unit: null as string | null }))
-          .filter(x => x.name.length > 0);
+        const parsed = safeJsonParse(responseText);
+
+        if (parsed && Array.isArray(parsed.items)) {
+          parsedItems = parsed.items;
+          console.log('[nutrition] Normalizer parsed items:', parsedItems);
+
+          // Food search skill fired (meal parsing)
+          if (parsedItems.length > 0) {
+            skillsFired.push('food_search');
+          }
+        } else {
+          console.warn('[nutrition] Normalizer returned invalid JSON, using fallback NLU');
+          parsedItems = fallbackNLU(message);
+        }
       }
     } else {
-      console.warn('[nutrition] Normalizer LLM failed, falling back to naive split:', normalizerError);
-      // Fixed naive split: don't break decimals (split on punctuation followed by space)
-      parsedItems = message.split(/[.,]\s+| and | with | plus /i)
-        .map(s => ({ name: s.trim(), amount: null as number | null, unit: null as string | null }))
-        .filter(x => x.name.length > 0);
+      // Normalizer failed entirely, use fallback
+      console.warn('[nutrition] Normalizer error, using fallback NLU');
+      parsedItems = fallbackNLU(message);
     }
 
     // Step 1.5: Sanitize normalized items (fix quantity/serving_label issues)
@@ -426,27 +652,30 @@ Rules:
         name: i.name,
         quantity: i.quantity ?? null,
         unit: i.unit ?? null,
-        calories: i.calories ?? 0,
-        protein_g: i.protein_g ?? 0,
-        carbs_g: i.carbs_g ?? 0,
-        fat_g: i.fat_g ?? 0,
-        fiber_g: i.fiber_g ?? 0, // ALWAYS include fiber, even if 0
+        calories: Math.round(i.calories ?? 0),
+        protein_g: Math.round(i.protein_g ?? 0),
+        carbs_g: Math.round(i.carbs_g ?? 0),
+        fat_g: Math.round(i.fat_g ?? 0),
+        fiber_g: Math.round(i.fiber_g ?? 0), // ALWAYS include fiber, even if 0
         editable: true
       })),
       totals: {
-        ...macroResults.totals,
-        fiber_g: macroResults.totals.fiber_g ?? 0 // Ensure fiber in totals
+        calories: Math.round(macroResults.totals.calories ?? 0),
+        protein_g: Math.round(macroResults.totals.protein_g ?? 0),
+        carbs_g: Math.round(macroResults.totals.carbs_g ?? 0),
+        fat_g: Math.round(macroResults.totals.fat_g ?? 0),
+        fiber_g: Math.round(macroResults.totals.fiber_g ?? 0) // Ensure fiber in totals
       },
-      tef: { kcal: tef.kcal },
+      tef: { kcal: Math.round(tef.kcal) },
       tdee: {
-        target_kcal: tdee.target_kcal,
-        remaining_kcal: tdee.remaining_kcal,
-        remaining_percentage: tdee.remaining_percentage
+        target_kcal: Math.round(tdee.target_kcal),
+        remaining_kcal: Math.round(tdee.remaining_kcal),
+        remaining_percentage: Math.round(tdee.remaining_percentage * 10) / 10
       },
       meal_slot: inferMealSlotFromTime(), // Time-based inference
       eaten_at: new Date().toISOString(),
-      // Control button visibility based on showLogButton flag
-      actions: showLogButton ? ['CONFIRM_LOG', 'EDIT_ITEMS', 'CANCEL'] : ['EDIT_ITEMS', 'CANCEL'],
+      // ALWAYS show CONFIRM_LOG button for both "I ate" and "what are the macros" queries
+      actions: ['CONFIRM_LOG', 'EDIT_ITEMS', 'CANCEL'],
       warnings
     };
 

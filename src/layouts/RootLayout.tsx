@@ -38,6 +38,7 @@ export default function RootLayout() {
 
   const [isNavOpen, setIsNavOpen] = useState(false);
   const [chats, setChats] = useState<ChatSummary[]>([]);
+  const [groupedChats, setGroupedChats] = useState<import('../lib/chatHistory').ChatHistoryGroup[]>([]);
   const [userProfile, setUserProfile] = useState<UserProfile>(null);
 
   // Load chat history helper
@@ -50,12 +51,17 @@ export default function RootLayout() {
     }
     
     try {
-      const list = await getChatHistory(user.id);
-      // getChatHistory now only returns sessions with both user questions and assistant responses
-      setChats(list);
+      const { getChatHistoryGrouped } = await import('../lib/chatHistory');
+      const groups = await getChatHistoryGrouped(user.id, 30); // Limit 30 for sidebar
+      setGroupedChats(groups);
+      
+      // Also keep flat list for backward compatibility
+      const flatList = groups.flatMap(g => g.chats);
+      setChats(flatList);
     } catch (err) {
       console.error('[Recent Chats] Failed to load:', err);
       setChats([]);
+      setGroupedChats([]);
     }
   };
 
@@ -134,6 +140,7 @@ export default function RootLayout() {
         onClose={() => setIsNavOpen(false)}
         onNavigate={(path: string) => { setIsNavOpen(false); navigate(path); }}
         recentChats={chats}
+        groupedChats={groupedChats}
         userProfile={userProfile}
         onDeleteChat={handleDeleteChat}
       />

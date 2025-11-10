@@ -23,6 +23,8 @@ export default tseslint.config(
         'warn',
         { allowConstantExport: true },
       ],
+      'no-redeclare': 'error',
+      'no-shadow': 'error',
     },
   }
 );

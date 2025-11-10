@@ -13,11 +13,12 @@ type Props = {
   onClose: () => void;
   onNavigate: (path: string) => void;
   recentChats: ChatSummary[];
+  groupedChats?: import('../lib/chatHistory').ChatHistoryGroup[];
   userProfile?: UserProfile;
   onDeleteChat?: (id: string) => void;
 };
 
-export default function NavigationSidebar({ isOpen, onClose, onNavigate, recentChats, userProfile, onDeleteChat }: Props) {
+export default function NavigationSidebar({ isOpen, onClose, onNavigate, recentChats, groupedChats, userProfile, onDeleteChat }: Props) {
   const { can } = useRole();
   const [creditBalance, setCreditBalance] = useState<number | null>(null);
   const [isLowBalance, setIsLowBalance] = useState(false);
@@ -214,41 +215,60 @@ export default function NavigationSidebar({ isOpen, onClose, onNavigate, recentC
           </Section>
 
           <Section title="Recent Chats">
-            {recentChats.length === 0 ? (
-              <div className="px-2 py-1 text-xs text-gray-500">No chat history yet</div>
-            ) : recentChats.map(chat => (
-              <div 
-                key={chat.id} 
-                className="group flex items-center justify-between px-3 py-2 rounded hover:bg-gray-100"
-              >
+            {(groupedChats && groupedChats.length > 0) ? (
+              <>
+                {groupedChats.map(group => (
+                  <details key={group.date} open={group === groupedChats[0]} className="mb-2">
+                    <summary className="px-3 py-2 cursor-pointer hover:bg-gray-100 rounded text-sm font-medium text-gray-700 list-none">
+                      <span className="flex items-center justify-between">
+                        <span>{group.displayDate}</span>
+                        <span className="text-xs text-gray-500">({group.chats.length})</span>
+                      </span>
+                    </summary>
+                    <div className="pl-2 mt-1">
+                      {group.chats.map(chat => (
+                        <div 
+                          key={chat.id} 
+                          className="group flex items-center justify-between px-3 py-2 rounded hover:bg-gray-50"
+                        >
+                          <button
+                            className="flex-1 text-left min-w-0"
+                            onClick={() => onNavigate(`/chat?t=${encodeURIComponent(chat.id)}`)}
+                          >
+                            <div className="text-sm text-gray-700 truncate">
+                              {chat.title}
+                            </div>
+                            <div className="text-xs text-gray-500 truncate">
+                              {chat.preview}
+                            </div>
+                          </button>
+                          {onDeleteChat && (
+                            <button
+                              className="ml-2 p-1 text-red-600 rounded hover:bg-red-100 opacity-0 group-hover:opacity-100 transition-opacity"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onDeleteChat(chat.id);
+                              }}
+                              aria-label="Delete chat"
+                            >
+                              🗑️
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                ))}
                 <button
-                  className="flex-1 text-left min-w-0"
-                  onClick={() => onNavigate(`/chat?t=${encodeURIComponent(chat.id)}`)}
+                  onClick={() => onNavigate('/chat-history')}
+                  className="w-full px-3 py-2 mt-2 text-sm text-blue-600 hover:bg-blue-50 rounded transition-colors"
                 >
-                  <div className="text-sm font-medium text-gray-800 truncate">
-                    {chat.title}
-                  </div>
-                  <div className="text-xs text-gray-500 truncate">
-                    {chat.preview}
-                  </div>
-                  <div className="text-xs text-gray-400 mt-0.5">
-                    {formatRelativeTime(chat.updated_at)}
-                  </div>
+                  View all history →
                 </button>
-                {onDeleteChat && (
-                  <button
-                    className="ml-2 p-1 text-red-600 rounded hover:bg-red-100 opacity-0 group-hover:opacity-100 transition-opacity"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteChat(chat.id);
-                    }}
-                    aria-label="Delete chat"
-                  >
-                    🗑️
-                  </button>
-                )}
-              </div>
-            ))}
+              </>
+            ) : (
+              <div className="px-2 py-1 text-xs text-gray-500">No chat history yet</div>
+            )}
           </Section>
         </nav>
 

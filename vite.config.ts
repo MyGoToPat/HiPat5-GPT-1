@@ -41,6 +41,8 @@ incomplete code during development sprints.
       }
     }
   ],
+  server: { port: 5176, strictPort: true },
+  preview: { port: 5176, strictPort: true },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { PatAvatar } from './PatAvatar';
 import { VoiceWaveform } from './VoiceWaveform';
 import { TDEEPromptBubble } from './TDEEPromptBubble';
@@ -25,7 +25,7 @@ import { logMealViaRpc as saveMealAction } from '../lib/meals/saveMeal';
 import type { SaveMealInput, SaveMealResult } from '../lib/meals/saveMeal';
 import { inferMealSlot } from '../lib/meals/inferMealSlot';
 import { trackFirstChatMessage } from '../lib/analytics';
-import { updateDailyActivitySummary, checkAndAwardAchievements } from '../lib/supabase';
+import { updateDailyActivitySummary, checkAndAwardAchievements, getUserDayBoundaries, getSupabase } from '../lib/supabase';
 import {
   getThread,
   upsertThread,
@@ -39,10 +39,10 @@ import {
   getChatMessages,
   createChatSession
 } from '../lib/chatHistory';
+
 import { spendCredits, PRICING } from '../lib/credits';
 import toast from 'react-hot-toast';
-import { getSupabase } from '../lib/supabase';
-import { useNavigate } from 'react-router-dom';
+import MealVerifyCard from './tmwya/MealVerifyCard';
 import { useRole } from '../hooks/useRole';
 import { isPrivileged } from '../utils/rbac';
 import { AnimatePresence } from 'framer-motion';
@@ -106,21 +106,57 @@ export const ChatPat: React.FC = () => {
     hydratedOnceRef.current = false;
   }, [searchParams]);
 
-  // Initialize user id on mount (do NOT create sessions here)
+  // Dashboard data for MealVerifyCard live calculations
+  const [dashboardData, setDashboardData] = useState<{
+    targetCalories: number;
+    totalCalories: number;
+  } | null>(null);
+
+  // Load live dashboard data (target calories and consumed today)
+  const loadLiveDashboard = async () => {
+    if (!userId) return;
+    try {
+      const supabase = getSupabase();
+      
+      // Get user metrics for target calculation
+      const { data: metrics } = await supabase
+        .from('user_metrics')
+        .select('protein_g, carbs_g, fat_g')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      // Calculate target calories: (P×4) + (C×4) + (F×9)
+      const targetCalories = metrics
+        ? Math.round((metrics.protein_g * 4) + (metrics.carbs_g * 4) + (metrics.fat_g * 9))
+        : 2000;
+
+      // Get today's consumed calories using timezone-aware boundaries
+      const dayBoundaries = await getUserDayBoundaries(userId);
+      
+      const { data: items } = await supabase
+        .from('meal_items')
+        .select('energy_kcal, meal_log:meal_logs!inner(ts, user_id)')
+        .eq('meal_log.user_id', userId)
+        .gte('meal_log.ts', dayBoundaries.day_start)
+        .lte('meal_log.ts', dayBoundaries.day_end);
+
+      const totalCalories = (items || []).reduce(
+        (sum, item) => sum + Number(item.energy_kcal || 0),
+        0
+      );
+
+      setDashboardData({ targetCalories, totalCalories });
+      console.log('[ChatPat] Live dashboard data loaded:', { targetCalories, totalCalories });
+    } catch (error) {
+      console.error('[ChatPat] Failed to load dashboard data:', error);
+    }
+  };
+
+  // Load dashboard data on mount and when userId changes
   useEffect(() => {
-    const initUser = async () => {
-      if (userId) return;
-      try {
-        const { getSupabase } = await import('../lib/supabase');
-        const supabase = getSupabase();
-        const { data } = await supabase.auth.getUser();
-        const uid = data?.user?.id ?? null;
-        if (uid) setUserId(uid);
-      } catch (authError) {
-        console.warn('[ChatPat] Could not fetch user from auth:', authError);
-      }
-    };
-    initUser();
+    if (userId) {
+      loadLiveDashboard();
+    }
   }, [userId]);
   const [inputText, setInputText] = useState('');
   const [showPlusMenu, setShowPlusMenu] = useState(false);
@@ -662,7 +698,7 @@ export const ChatPat: React.FC = () => {
     { id: 'file', label: 'File', icon: Folder },
   ];
 
-  const handleSendMessage = () => {
+  const handleSendMessage = async () => {
     // GUARD: Prevent double send
     if (sendingRef.current) {
       console.log('[ChatPat] Skipping duplicate send');
@@ -803,9 +839,8 @@ export const ChatPat: React.FC = () => {
         
         // Get AI response
         const getAIResponse = async () => {
-          try {
-            // Ensure session exists before making AI call - create fresh if URL is new=1
-            let currentSessionId = sessionIdRef.current;
+          // Ensure session exists before making AI call - create fresh if URL is new=1
+          let currentSessionId = sessionIdRef.current;
             if (!currentSessionId && userId) {
               try {
                 const supa = getSupabase();
@@ -911,354 +946,205 @@ export const ChatPat: React.FC = () => {
             // Use new unified message handler
             console.log('[ChatPat] Using P3 unified handler');
 
-            const { handleUserMessage } = await import('../core/chat/handleUserMessage');
-            const { loadUserContext } = await import('../core/personality/patSystem');
+            let assistantPersist: { content: string; metadata?: Record<string, unknown> } | null = null;
 
-            // Load full user context for personality injection
-            const userContext = await loadUserContext(user.data.user.id);
-            console.log('[ChatPat] User context loaded:', userContext);
-
-            // Load personality prompts from DB if enabled
-            if (import.meta.env.VITE_NEW_PERSONALITY === 'true') {
-              const { loadPersonality } = await import('../core/personality/loadPersonality');
-              await loadPersonality();
-            }
-
-            const result = await handleUserMessage(newMessage.text, {
-              userId: user.data.user.id,
-              userContext,
-              mode: 'text',
-            });
-
-            // Handle TMWYA verify payload
-            if (result.roleData?.type === 'tmwya.verify') {
-              const p = result.roleData;
-              console.log('[ChatPat] TMWYA verify detected, creating message with roleData:', p);
-              
-              // Add the verification card message
-              const verifyMessage: ChatMessage = {
-                id: crypto.randomUUID(),
-                text: '', // No text, rendered as card
-                isUser: false,
-                timestamp: new Date(),
-                roleData: {
-                  type: 'tmwya.verify',
-                  view: p.view,
-                  items: p.items,
-                  totals: p.totals,
-                  tef: p.tef,
-                  tdee: p.tdee
-                }
-              };
-              
-              setMessages(prev => prev.filter(m => m.id && !m.id.startsWith('thinking-')).concat(verifyMessage));
-              setIsSpeaking(false);
-              setIsThinking(false);
-              setIsSending(false);
-              setStatusText('');
-              return;
-            }
-
-            // Extract macro data from tool calls if present
-            let macroMetadata = null;
-            if (result.toolCalls && Array.isArray(result.toolCalls)) {
-              const getMacrosCalls = result.toolCalls.filter((tc: any) => tc.name === 'get_macros');
-              if (getMacrosCalls.length > 0 && result.rawData?.items) {
-                macroMetadata = { macros: result.rawData.items, source: 'get_macros_tool' };
+            try {
+              let handleUserMessageModule: typeof import('../core/chat/handleUserMessage');
+              try {
+                handleUserMessageModule = await import('../core/chat/handleUserMessage');
+              } catch (importError) {
+                console.error('[chat] dynamic import failed:', importError);
+                throw new Error('chat_handler_import_failed');
               }
-            }
 
-            // Extract citation data from Gemini responses
-            let citationMetadata = null;
-            if (result.rawData?.gemini === true) {
-              citationMetadata = {
-                cite: result.rawData.cite,
-                citeTitle: result.rawData.citeTitle,
-                webVerified: true
-              };
-            }
+              const { handleUserMessage } = handleUserMessageModule;
+              const { loadUserContext } = await import('../core/personality/patSystem');
 
-            // Extract AMA nutrition estimate data
-            let nutritionMetadata = null;
-            if (result.rawData?.ama_nutrition_estimate === true) {
-              nutritionMetadata = {
-                ama_nutrition_estimate: true,
-                items: result.rawData.items,
-                totals: result.rawData.totals
-              };
-            }
+              // Load full user context for personality injection
+              const userContext = await loadUserContext(user.data.user.id);
+              console.log('[ChatPat] User context loaded:', userContext);
 
-            // Check for TMWYA roleData
-            if (result.roleData?.type === 'tmwya.verify') {
-              const p = result.roleData;
-              console.log('[ChatPat] TMWYA verify detected, creating message with roleData:', p);
+              // Load personality prompts from DB if enabled
+              if (import.meta.env.VITE_NEW_PERSONALITY === 'true') {
+                const { loadPersonality } = await import('../core/personality/loadPersonality');
+                await loadPersonality();
+              }
 
-              // Add the verification card message
-              const verifyMessage: ChatMessage = {
-                id: crypto.randomUUID(),
-                text: '', // No text, rendered as card
-                isUser: false,
-                timestamp: new Date(),
-                roleData: {
-                  type: 'tmwya.verify',
-                  view: p.view,
-                  items: p.items,
-                  totals: p.totals,
-                  tef: p.tef,
-                  tdee: p.tdee
+              const result = await handleUserMessage(newMessage.text, {
+                userId: user.data.user.id,
+                userContext,
+                mode: 'text',
+              });
+
+              // Extract macro data from tool calls if present
+              let macroMetadata = null;
+              if (result.toolCalls && Array.isArray(result.toolCalls)) {
+                const getMacrosCalls = result.toolCalls.filter((tc: any) => tc.name === 'get_macros');
+                if (getMacrosCalls.length > 0 && result.rawData?.items) {
+                  macroMetadata = { macros: result.rawData.items, source: 'get_macros_tool' };
                 }
-              };
+              }
 
-              setMessages(prev => prev.filter(m => m.id && !m.id.startsWith('thinking-')).concat(verifyMessage));
-              setIsSpeaking(false);
-              setIsThinking(false);
-              setIsSending(false);
-              setStatusText('');
-              return;
-            }
-
-            // Combine metadata
-            const combinedMeta = macroMetadata || citationMetadata || nutritionMetadata
-              ? { ...macroMetadata, ...citationMetadata, ...nutritionMetadata }
-              : undefined;
-
-            // Add Pat's response and remove thinking indicator
-            const patMessage: ChatMessage = {
-              id: crypto.randomUUID(),
-              text: result.response,
-              isUser: false,
-              timestamp: new Date(),
-              meta: combinedMeta
-            };
-
-            // Remove thinking message and add Pat's response
-            setMessages(prev => prev.filter(m => m.id && !m.id.startsWith('thinking-')).concat(patMessage));
-            setIsSpeaking(false);
-            setIsThinking(false);
-            setIsSending(false);
-            setStatusText('');
-
-            // Save assistant message to database
-            if (sessionId) {
-              await addChatMessage(sessionId, 'assistant', patMessage.text);
-            }
-
-            // Save to history (legacy)
-            const historyEntry = {
-              ...chatState,
-              messages: [...messages, newMessage, patMessage],
-              updatedAt: new Date().toISOString()
-            };
-            await upsertThread(historyEntry);
-
-          } catch (error) {
-            console.error('[ChatPat] Error in message handling:', error);
-
-            // Clear all loading states
-            setIsSpeaking(false);
-            setIsThinking(false);
-            setIsSending(false);
-            setStatusText('');
-
-            // Remove thinking message and show error
-            const errorMessage: ChatMessage = {
-              id: crypto.randomUUID(),
-              text: 'Sorry, I encountered an error. Please try again.',
-              isUser: false,
-              timestamp: new Date()
-            };
-            setMessages(prev => prev.filter(m => !m.id.startsWith('thinking-')).concat(errorMessage));
-          }
-
-          return; // Exit after P3 handler
-
-          // ==== LEGACY FALLBACK CODE (UNREACHABLE AFTER RETURN) ====
-          try {
-            // Fallback to existing chat logic with streaming
-            // Inject context into the last user message if we have it
-            let payload = conversationHistory.slice(-10);
-            if (contextMessage && payload.length > 0) {
-              const lastIdx = payload.length - 1;
-              if (payload[lastIdx].role === 'user') {
-                payload[lastIdx] = {
-                  ...payload[lastIdx],
-                  content: `${contextMessage}\n\nUser message: ${payload[lastIdx].content}`
+              // Extract citation data from Gemini responses
+              let citationMetadata = null;
+              if (result.rawData?.gemini === true) {
+                citationMetadata = {
+                  cite: result.rawData.cite,
+                  citeTitle: result.rawData.citeTitle,
+                  webVerified: true
                 };
               }
-            }
-            console.log("[chat:req]", { messages: payload });
 
-            // Create an empty message for streaming
-            const streamingMessageId = (Date.now() + 1).toString();
-            let streamingText = '';
+              // Extract AMA nutrition estimate data
+              let nutritionMetadata = null;
+              if (result.rawData?.ama_nutrition_estimate === true) {
+                nutritionMetadata = {
+                  ama_nutrition_estimate: true,
+                  items: result.rawData.items,
+                  totals: result.rawData.totals
+                };
+              }
 
-            const patResponse: ChatMessage = {
-              id: streamingMessageId,
-              text: '',
-              timestamp: new Date(),
-              isUser: false
-            };
+              if (result.roleData?.type === 'tmwya.verify') {
+                const p = result.roleData;
+                console.log('[ChatPat] TMWYA verify detected, creating message with roleData:', p);
 
-            // Remove thinking message and add empty streaming message
-            setMessages(prev => prev.filter(m => !m.id.startsWith('thinking-')).concat(patResponse));
+                const verifyMessage: ChatMessage = {
+                  id: crypto.randomUUID(),
+                  text: '',
+                  isUser: false,
+                  timestamp: new Date(),
+                  roleData: {
+                    type: 'tmwya.verify',
+                    view: p.view,
+                    items: p.items,
+                    totals: p.totals,
+                    tef: p.tef,
+                    tdee: p.tdee
+                  }
+                };
 
-            // Use streaming for real-time typing effect
-            await callChatStreaming({
-              messages: payload,
-              onToken: (token: string) => {
-                streamingText += token;
-                setMessages(prev =>
-                  prev.map(msg =>
-                    msg.id === streamingMessageId
-                      ? { ...msg, text: streamingText }
-                      : msg
-                  )
-                );
-              },
-              onComplete: (fullText: string) => {
-                console.log("[chat:res] Streaming complete");
-                streamingText = fullText;
+                assistantPersist = { content: '', metadata: { roleData: verifyMessage.roleData } };
 
-                // Pat's response already includes "Log" for macro responses
-                // Do NOT add extra instructions
-
-                setMessages(prev =>
-                  prev.map(msg =>
-                    msg.id === streamingMessageId
-                      ? { ...msg, text: fullText }
-                      : msg
-                  )
-                );
-                setIsSending(false);
-                setIsThinking(false);
+                setMessages(prev => prev.filter(m => m.id && !m.id.startsWith('thinking-')).concat(verifyMessage));
                 setIsSpeaking(false);
-                setStatusText('');
-              },
-              onError: (error: string) => {
-                console.error('Streaming error:', error);
-                toast.error(error.includes('429') ? "Pat is busy right now. Please try again later." : error);
-
-                // Remove the empty message on error
-                setMessages(prev => prev.filter(msg => msg.id !== streamingMessageId));
-                setIsSending(false);
                 setIsThinking(false);
-                setIsSpeaking(false);
+                setIsSending(false);
                 setStatusText('');
                 return;
               }
-            });
 
-            // Update the reference for saving
-            const finalStreamingResponse = {
-              ...patResponse,
-              text: streamingText || "I'm here to help! How can I assist you today?"
-            };
+              const combinedMeta = macroMetadata || citationMetadata || nutritionMetadata
+                ? { ...macroMetadata, ...citationMetadata, ...nutritionMetadata }
+                : undefined;
 
-            // Save thread after successful assistant reply
-            const finalMessages = [...messages, newMessage, finalStreamingResponse];
-            const messagesForSave = finalMessages.map(msg => ({
-              role: msg.isUser ? 'user' : 'assistant',
-              content: msg.text
-            }));
-            
-            // Save to local history
-            const threadToSave: ChatThread = {
-              id: threadId,
-              title: makeTitleFrom(messagesForSave),
-              updatedAt: Date.now(),
-              messages: messagesForSave
-            };
-            upsertThread(threadToSave);
-            
-            // Save AI response to database
-            try {
-              if (!userId) {
-                console.warn('[chat-save] Skipping save: no userId');
-                return;
-              }
+              const patMessage: ChatMessage = {
+                id: crypto.randomUUID(),
+                text: result.response,
+                isUser: false,
+                timestamp: new Date(),
+                meta: combinedMeta
+              };
 
-              // Save to new chat_messages table
-              if (sessionId) {
-                await addChatMessage(sessionId, 'assistant', finalStreamingResponse.text);
-              }
+              assistantPersist = {
+                content: patMessage.text,
+                metadata: combinedMeta ?? undefined
+              };
 
-              // Legacy persistence - FIXED: pass sessionId not threadId, use object syntax
-              if (sessionId) {
-                await ChatManager.saveMessage({
-                  userId,
-                  sessionId,
-                  text: finalStreamingResponse.text,
-                  sender: 'pat'
-                });
-              } else {
-                console.error('[chat-save] No sessionId available for assistant message');
-              }
-
-              // Spend credits for chat turn (non-blocking)
-              try {
-                await spendCredits(PRICING.AMA_TURN, 'Chat conversation turn');
-              } catch (creditError: any) {
-                if (creditError.message === 'INSUFFICIENT_CREDITS') {
-                  console.warn('[ChatPat] Insufficient credits, but allowing conversation');
-                } else {
-                  console.error('[ChatPat] Credits error:', creditError);
-                }
-              }
-            } catch (error) {
-              console.error('Failed to save AI response:', error);
-            }
-
-            // Track first chat message
-            if (messages.length === 1) { // Only initial greeting before this
-              try {
-                // Check if message indicates workout or activity logging
-                detectAndLogWorkout(inputText);
-
-                const supabase = getSupabase();
-                const user = await supabase.auth.getUser();
-                if (user.data.user) {
-                  trackFirstChatMessage(user.data.user.id);
-                }
-              } catch (error) {
-                console.error('Error tracking first chat:', error);
-              }
-            }
-            
-            // Note: Speaking and sending state already handled in streaming callbacks
-            
-          } catch (error) {
-            console.error('Error getting AI response:', error);
-            
-            // Handle specific error types with appropriate messaging
-            const errorMessage = String(error?.message || error);
-            if (errorMessage.includes('openai-chat 429')) {
-              toast.error("Pat is busy right now. Please try again later.");
-            } else {
-              toast.error('Chat failed');
-            }
-            
-            const errorResponse: ChatMessage = {
-              id: (Date.now() + 1).toString(),
-              text: 'I\'m experiencing some technical difficulties. Please try your message again.',
-              timestamp: new Date(),
-              isUser: false
-            };
-            
-            setMessages(prev => [...prev, errorResponse]);
-            
-            // Ensure all loading states are cleared
-            setTimeout(() => {
+              setMessages(prev => prev.filter(m => m.id && !m.id.startsWith('thinking-')).concat(patMessage));
               setIsSpeaking(false);
-              setIsSending(false);
               setIsThinking(false);
-            }, 100);
-          }
-        };
+              setIsSending(false);
+              setStatusText('');
+
+              const historyEntry = {
+                ...chatState,
+                messages: [...messages, newMessage, patMessage],
+                updatedAt: new Date().toISOString()
+              };
+              await upsertThread(historyEntry);
+            } catch (error) {
+              console.error('[ChatPat] Error in message handling:', error);
+
+              setIsSpeaking(false);
+              setIsThinking(false);
+              setIsSending(false);
+              setStatusText('');
+
+              const errorMessage: ChatMessage = {
+                id: crypto.randomUUID(),
+                text: 'Sorry, I hit a temporary load error. Try again.',
+                isUser: false,
+                timestamp: new Date()
+              };
+
+              const errorCode =
+                error instanceof Error && error.message === 'chat_handler_import_failed'
+                  ? 'chat_handler_import_failed'
+                  : 'chat_handler_unknown_error';
+
+              assistantPersist = {
+                content: errorMessage.text,
+                metadata: { error: { code: errorCode } }
+              };
+
+              setMessages(prev => prev.filter(m => !m.id.startsWith('thinking-')).concat(errorMessage));
+            } finally {
+              const sessionToUse = sessionIdRef.current ?? sessionId;
+              // Always save assistant message, even on failure
+              if (!assistantPersist) {
+                assistantPersist = {
+                  content: 'Sorry, I hit a temporary load error. Try again.',
+                  metadata: { error: { code: 'chat_handler_unknown_error' } }
+                };
+              }
+              if (sessionToUse) {
+                try {
+                  const saved = await addChatMessage(
+                    sessionToUse,
+                    'assistant',
+                    assistantPersist.content,
+                    assistantPersist.metadata
+                  );
+                  console.info('[chat-save] assistant saved', saved.id);
+                } catch (saveError) {
+                  console.error('[chat-save] Failed to persist assistant message:', saveError);
+                }
+              }
+            }
+          };
 
         getAIResponse();
       }, 1000);
-    }
+      }
+    } catch (err) {
+      console.error('[ChatPat] send failed:', err);
+      // graceful assistant fallback so the thread is never empty on error
+      const sessionToUse = sessionIdRef.current ?? sessionId;
+      if (sessionToUse) {
+        try {
+          await addChatMessage(
+            sessionToUse,
+            'assistant',
+            'Sorry, I hit a temporary load error. Try again.',
+            { error: { code: 'send_failed' } }
+          );
+        } catch {
+          // ignore secondary save errors
+        }
+      }
+
+      setMessages(prev => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          text: 'Sorry, I hit a temporary load error. Try again.',
+          isUser: false,
+          timestamp: new Date()
+        }
+      ]);
     } finally {
+      setIsSending(false);
       sendingRef.current = false;
     }
   };
@@ -1902,41 +1788,99 @@ export const ChatPat: React.FC = () => {
               }
 
               return messages.map((message, index) => {
-              // Handle TMWYA verify card - set up pendingMeal instead of showing inline
+              // Handle TMWYA verify card - render MealVerifyCard inline as chat bubble
               if (message.roleData?.type === 'tmwya.verify') {
-                console.log('[tmwya] resolved → pendingMeal set');
+                const handleMealConfirm = async () => {
+                  try {
+                    setIsLoggingActivity(true);
+                    
+                    // Convert roleData to SaveMealInput format
+                    const items = message.roleData.items || [];
+                    const view = message.roleData.view || {};
+                    
+                    const saveInput: SaveMealInput = {
+                      userId: userId!,
+                      messageId: undefined,
+                      items: items.map((item: any) => ({
+                        name: item.name || '',
+                        quantity: Number(item.quantity ?? item.qty ?? 1),
+                        unit: item.unit || 'serving',
+                        energy_kcal: Number(item.calories ?? item.energy_kcal ?? 0),
+                        protein_g: Number(item.protein_g ?? 0),
+                        fat_g: Number(item.fat_g ?? 0),
+                        carbs_g: Number(item.carbs_g ?? 0),
+                        fiber_g: Number(item.fiber_g ?? 0),
+                        brand: item.brand,
+                        description: undefined
+                      })),
+                      mealSlot: view.meal_slot || null,
+                      timestamp: view.eaten_at || new Date().toISOString(),
+                      note: undefined,
+                      clientConfidence: undefined,
+                      source: 'text'
+                    };
 
-                // Set up pending meal from roleData
-                const mealItems = message.roleData.items || [];
-                const pendingMealData = {
-                  items: mealItems.map((item: any) => ({
-                    description: item.name || item.description || '',
-                    brand: item.brand || undefined,
-                    qty: item.quantity || item.qty || 1,
-                    unit: item.unit || 'serving',
-                    calories: item.calories || 0,
-                    protein_g: item.protein_g || 0,
-                    carbs_g: item.carbs_g || 0,
-                    fat_g: item.fat_g || 0,
-                    fiber_g: item.fiber_g || 0,
-                    source: item.source || undefined,
-                  })),
-                  inferredTimestamp: new Date(),
-                  totals: {
-                    calories: message.roleData.totals?.calories || 0,
-                    protein_g: message.roleData.totals?.protein_g || 0,
-                    carbs_g: message.roleData.totals?.carbs_g || 0,
-                    fat_g: message.roleData.totals?.fat_g || 0,
-                    fiber_g: message.roleData.totals?.fiber_g || 0,
+                    const result = await saveMealAction(saveInput);
+
+                    if (result.ok) {
+                      // Reload dashboard data
+                      await loadLiveDashboard();
+                      
+                      const calories = view.totals?.calories || 0;
+                      
+                      // Add confirmation message with View Dashboard button inline
+                      const confirmMessage: ChatMessage = {
+                        id: crypto.randomUUID(),
+                        text: `✅ Meal logged! ${calories} calories added.`,
+                        isUser: false,
+                        timestamp: new Date(),
+                        meta: {
+                          showDashboardButton: true,
+                          sessionId: sessionId
+                        }
+                      };
+                      setMessages(prev => [...prev, confirmMessage]);
+                    } else {
+                      toast.error(result.error || 'Failed to log meal');
+                    }
+                  } catch (error: any) {
+                    console.error('[MealVerifyCard] Log failed:', error);
+                    toast.error('Failed to log meal');
+                  } finally {
+                    setIsLoggingActivity(false);
                   }
                 };
 
-                setPendingMeal(pendingMealData);
-                setShowMealVerification(true);
-                console.log('[tmwya] verify → opened');
+                const handleMealCancel = () => {
+                  const cancelMessage: ChatMessage = {
+                    id: crypto.randomUUID(),
+                    text: "Meal logging cancelled. Let me know if you'd like to try again!",
+                    isUser: false,
+                    timestamp: new Date(),
+                  };
+                  setMessages(prev => [...prev, cancelMessage]);
+                };
 
-                // Don't render the message, show verification page instead
-                return null;
+                // Render MealVerifyCard inline as assistant bubble
+                return (
+                  <div key={message.id} className="flex justify-start">
+                    <div className="max-w-2xl">
+                      <MealVerifyCard
+                        view={message.roleData.view}
+                        items={message.roleData.items || []}
+                        totals={message.roleData.totals}
+                        tef={message.roleData.tef}
+                        tdee={message.roleData.tdee}
+                        liveDashboard={dashboardData ? {
+                          target_kcal: dashboardData.targetCalories,
+                          consumed_today: dashboardData.totalCalories
+                        } : undefined}
+                        onConfirm={handleMealConfirm}
+                        onCancel={handleMealCancel}
+                      />
+                    </div>
+                  </div>
+                );
               }
               
               // Regular message bubble
@@ -1957,6 +1901,33 @@ export const ChatPat: React.FC = () => {
                         <p className="message-bubble text-base leading-relaxed whitespace-pre-wrap break-words" style={{ lineHeight: '1.6', overflowWrap: 'anywhere', wordBreak: 'break-word' }}>{message.text}</p>
                       ) : (
                         renderAssistantBubble(message)
+                      )}
+
+                      {/* View Dashboard button for meal logged messages */}
+                      {message.meta?.showDashboardButton && (
+                        <div className="mt-3 pt-2 border-t border-gray-600">
+                          <button
+                            onClick={async () => {
+                              try {
+                                const sessionIdToReturn = message.meta.sessionId || sessionId;
+                                if (sessionIdToReturn) {
+                                  sessionStorage.setItem('returnToChatId', sessionIdToReturn);
+                                }
+                                navigate('/dashboard', {
+                                  state: {
+                                    returnToChatId: sessionIdToReturn,
+                                    mealJustLogged: true
+                                  }
+                                });
+                              } catch (navError) {
+                                console.error('[nav] Failed to navigate:', navError);
+                              }
+                            }}
+                            className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+                          >
+                            View Dashboard →
+                          </button>
+                        </div>
                       )}
 
                       {/* Source display for web-verified content */}

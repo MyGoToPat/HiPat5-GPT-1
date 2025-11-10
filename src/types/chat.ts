@@ -12,6 +12,12 @@ export interface ChatMessage {
     totals?: any;
     tef?: any;
     tdee?: any;
+    showDashboardButton?: boolean;
+    sessionId?: string;
+    cite?: string;
+    citeTitle?: string;
+    webVerified?: boolean;
+    ama_nutrition_estimate?: boolean;
   };
   roleData?: {
     type?: 'tmwya.verify' | 'ama.meal_estimate_only';

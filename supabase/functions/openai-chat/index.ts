@@ -1,8 +1,25 @@
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, cache-control, pragma, expires, accept",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
-};
+function corsHeaders(req: Request) {
+  const reqOrigin = req.headers.get("origin") ?? "";
+  const allowed = (Deno.env.get("ALLOWED_ORIGINS") ?? "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean);
+  const allowOrigin = allowed.includes(reqOrigin) ? reqOrigin : (allowed[0] ?? "*");
+
+  const acrh = req.headers.get("access-control-request-headers");
+  const allowHeaders = acrh && acrh.length > 0
+    ? acrh
+    : "authorization, apikey, x-client-info, content-type, cache-control";
+
+  return {
+    "Access-Control-Allow-Origin": allowOrigin,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": allowHeaders,
+    "Access-Control-Max-Age": "86400",
+    "Vary": "Origin, Access-Control-Request-Headers",
+    "Content-Type": "application/json",
+  };
+}
 import { PAT_TOOLS, executeTool } from './tools.ts';
 import { createClient } from 'npm:@supabase/supabase-js@2.53.0';
 import { loadSwarmFromDB, buildSwarmPrompt } from './swarm-loader.ts';
@@ -29,8 +46,8 @@ const EMERGENCY_FALLBACK = 'You are Pat. Speak clearly and concisely.';
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, {
-      status: 200,
-      headers: corsHeaders,
+      status: 204,
+      headers: corsHeaders(req),
     });
   }
 
@@ -56,7 +73,7 @@ Deno.serve(async (req: Request) => {
         JSON.stringify({ error: 'Invalid messages format' }),
         {
           status: 400,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          headers: corsHeaders(req),
         }
       );
     }
@@ -68,7 +85,7 @@ Deno.serve(async (req: Request) => {
         JSON.stringify({ error: 'Missing OpenAI API key' }),
         {
           status: 400,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          headers: corsHeaders(req),
         }
       );
     }
@@ -86,7 +103,7 @@ Deno.serve(async (req: Request) => {
         JSON.stringify({ error: 'Missing Supabase service configuration' }),
         {
           status: 400,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          headers: corsHeaders(req),
         }
       );
     }
@@ -146,7 +163,7 @@ Deno.serve(async (req: Request) => {
           JSON.stringify({ error: 'Failed to start stream' }),
           {
             status: openaiResponse.status,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            headers: corsHeaders(req),
           }
         );
       }
@@ -238,7 +255,7 @@ Deno.serve(async (req: Request) => {
           JSON.stringify({ error: 'Rate limit exceeded. Please try again in a moment.' }),
           {
             status: 429,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            headers: corsHeaders(req),
           }
         );
       }
@@ -247,7 +264,7 @@ Deno.serve(async (req: Request) => {
         JSON.stringify({ error: 'OpenAI API error', details: errorData }),
         {
           status: openaiResponse.status,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          headers: corsHeaders(req),
         }
       );
     }
@@ -260,7 +277,7 @@ Deno.serve(async (req: Request) => {
         JSON.stringify({ error: 'No response from OpenAI' }),
         {
           status: 500,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          headers: corsHeaders(req),
         }
       );
     }
@@ -293,7 +310,7 @@ Deno.serve(async (req: Request) => {
         }),
         {
           status: 200,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          headers: corsHeaders(req),
         }
       );
     }
@@ -337,7 +354,7 @@ Deno.serve(async (req: Request) => {
       }),
       {
         status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: corsHeaders(req),
       }
     );
   } catch (error) {
@@ -347,7 +364,7 @@ Deno.serve(async (req: Request) => {
       JSON.stringify({ error: 'Internal server error', details: String(error) }),
       {
         status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: corsHeaders(req),
       }
     );
   }

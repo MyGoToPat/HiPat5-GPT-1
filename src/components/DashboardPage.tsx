@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { PatAvatar } from './PatAvatar';
-import { MessageSquare, Mic, Check, X } from 'lucide-react';
+import { MessageSquare, Mic, Check, X, ArrowLeft } from 'lucide-react';
 import { FrequencySection } from './dashboard/FrequencySection';
 import { RestSection } from './dashboard/RestSection';
 import { EnergySection } from './dashboard/EnergySection';
@@ -537,7 +537,26 @@ export const DashboardPage: React.FC = () => {
 
             {/* Essential Actions - Restored CTAs */}
             <div className="mt-6 bg-gray-900/50 backdrop-blur-sm rounded-2xl p-4 border border-gray-800">
-              <div className="flex items-center justify-center gap-3">
+              <div className="flex items-center justify-center gap-3 flex-wrap">
+                {/* Return to Last Chat button - conditional */}
+                {(() => {
+                  const returnChatId = location.state?.returnToChatId || sessionStorage.getItem('returnToChatId');
+                  if (returnChatId) {
+                    // Clear sessionStorage after reading
+                    sessionStorage.removeItem('returnToChatId');
+                    return (
+                      <button
+                        onClick={() => navigate(`/chat?t=${encodeURIComponent(returnChatId)}`)}
+                        className="flex items-center gap-2 px-6 py-3 bg-purple-600 hover:bg-purple-700 rounded-xl text-white font-medium transition-all duration-200 min-h-[44px] flex-1 max-w-[220px] justify-center"
+                      >
+                        <ArrowLeft size={20} />
+                        <span className="text-sm">Return to Chat</span>
+                      </button>
+                    );
+                  }
+                  return null;
+                })()}
+                
                 <button
                   onClick={() => navigate('/chat')}
                   className="flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-xl text-white font-medium transition-all duration-200 min-h-[44px] flex-1 max-w-[200px] justify-center"

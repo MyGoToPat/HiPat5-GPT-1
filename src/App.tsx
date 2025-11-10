@@ -20,6 +20,7 @@ import ProfilePage from './pages/ProfilePage';
 import UsagePage from './pages/profile/UsagePage';
 import VoicePage from './pages/VoicePage';
 import ChatPage from './pages/ChatPage';
+import { ChatHistoryPage } from './pages/ChatHistoryPage';
 import CameraPage from './pages/CameraPage';
 import TDEEOnboardingWizard from './pages/TDEEOnboardingWizard';
 import TrainerDashboardPage from './pages/TrainerDashboardPage';
@@ -66,6 +67,7 @@ function App() {
           <Route path="profile" element={<ProfilePage />} />
           <Route path="profile/usage" element={<UsagePage />} />
           <Route path="chat" element={<ChatPage />} />
+          <Route path="chat-history" element={<ChatHistoryPage />} />
           <Route path="camera" element={<CameraPage />} />
           <Route path="voice" element={<VoicePage />} />
           <Route path="tmwya" element={<TMWYATestPage />} />

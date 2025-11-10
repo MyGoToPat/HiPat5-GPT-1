@@ -1,7 +1,29 @@
 import { runPersonalityRouter, normalizeIntent } from '../personality/routerAgent';
 import { normalizeNutritionIntent } from './nutritionIntent';
 
+export type AmaChannel = "ama-web" | "ama-local";
+
+export function decideAmaChannel(input: string): AmaChannel {
+  const noWeb = /\b(no web|offline|from memory|without internet)\b/i.test(input);
+  if (noWeb) return "ama-local";
+  return "ama-web";
+}
+
 export async function detectIntent(inputText: string): Promise<import('../personality/routerAgent').RouterDecision> {
+  // Dev override for testing
+  if (inputText.startsWith("dev:force verify")) {
+    return {
+      intent: 'meal_logging',
+      route_to: 'tmwya',
+      use_gemini: false,
+      reason: 'meal_logging' as const,
+      needs_clarification: false,
+      clarifier: null,
+      confidence: 1.0,
+      ama_nutrition_estimate: false,
+    };
+  }
+  
   // --- existing upstream detectors (leave as-is) ---
   // const webIntent = detectWebIntent(inputText)  // if you have one already
   const webIntent: any = (globalThis as any).__hipat_web_intent || {}; // guard if absent
@@ -12,7 +34,7 @@ export async function detectIntent(inputText: string): Promise<import('../person
   let finalIntent: 'ama' | 'meal_logging' | 'general' = n.finalIntent;
   let route_to: 'ama' | 'tmwya' = finalIntent === 'meal_logging' ? 'tmwya' : 'ama';
   let use_gemini = false;
-  let reason = '';
+  let reason: "database_can_answer" | "requires_web_search" | "requires_visual" | "conversational" | "role_task" | "meal_logging" | "nutrition_estimate" | "general" | "ama_needs_web" = 'general';
 
   if (finalIntent === 'meal_logging') {
     reason = 'meal_logging';
@@ -33,6 +55,9 @@ export async function detectIntent(inputText: string): Promise<import('../person
     route_to,
     use_gemini,
     reason,
+    needs_clarification: false,
+    clarifier: null,
+    confidence: 0.8,
     ama_nutrition_estimate: !!n.ama_nutrition_estimate,
   };
   console.info('[router]', decision);

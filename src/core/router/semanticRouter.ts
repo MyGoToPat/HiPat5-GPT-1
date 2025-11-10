@@ -1,14 +1,11 @@
 function cosine(a:number[], b:number[]){ let d=0,na=0,nb=0; for(let i=0;i<a.length;i++){d+=a[i]*b[i];na+=a[i]*a[i];nb+=b[i]*b[i];} return d/(Math.sqrt(na)*Math.sqrt(nb)); }
 
+import { getEmbeddings } from '@/core/router/embed';
+
 export async function embed(text:string){
   try {
-    const r = await fetch("/functions/v1/embed", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ text })});
-    if (!r.ok) {
-      console.warn('[semanticRouter] Embed function failed:', r.status);
-      return [];
-    }
-    const j = await r.json();
-    return j.embedding || [];
+    const vectors = await getEmbeddings([text]);
+    return vectors[0] || [];
   } catch (err) {
     console.error('[semanticRouter] Embed exception:', err);
     return [];
