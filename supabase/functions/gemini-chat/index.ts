@@ -3,8 +3,7 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 const cors = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, cache-control, pragma, expires, accept",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, cache-control, pragma, expires, accept",
   "Content-Type": "application/json",
 };
 
@@ -22,9 +21,22 @@ serve(async (req: Request) => {
       );
     }
 
-    const { prompt } = await req.json().catch(() => ({ prompt: "" }));
+    const { prompt, systemPrompt } = await req.json().catch(() => ({ 
+      prompt: "", 
+      systemPrompt: "" 
+    }));
+    
+    const contents = [];
+    
+    if (systemPrompt) {
+      contents.push({ role: "user", parts: [{ text: systemPrompt }] });
+      contents.push({ role: "model", parts: [{ text: "Understood. I will follow these instructions." }] });
+    }
+    
+    contents.push({ role: "user", parts: [{ text: String(prompt ?? "") }] });
+    
     const body = {
-      contents: [{ role: "user", parts: [{ text: String(prompt ?? "") }] }],
+      contents,
       tools: [{ google_search: {} }],
     };
 
@@ -40,9 +52,10 @@ serve(async (req: Request) => {
 
     if (!resp.ok) {
       const detail = await resp.text().catch(() => "");
+      console.error("[gemini-chat] Google API error:", resp.status, detail);
       return new Response(
         JSON.stringify({ ok: false, error: "Gemini call failed", detail }),
-        { status: 500, headers: cors }
+        { status: 502, headers: cors }
       );
     }
 
@@ -71,4 +84,3 @@ serve(async (req: Request) => {
     );
   }
 });
-

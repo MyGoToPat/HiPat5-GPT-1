@@ -31,6 +31,125 @@ function canonicalKeyFrom(q: {
 }
 
 /**
+ * Known zero/low-calorie beverages - bypass food_cache to avoid false matches
+ * (e.g., "water" matching "beef noodle with water added")
+ */
+const ZERO_CAL_BEVERAGES: Record<string, MacroResult> = {
+  'water': {
+    name: 'Water',
+    serving_label: '100ml',
+    grams_per_serving: 100,
+    macros: { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 },
+    confidence: 1.0,
+    source: 'known_beverage'
+  },
+  'tap water': {
+    name: 'Tap Water',
+    serving_label: '100ml',
+    grams_per_serving: 100,
+    macros: { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 },
+    confidence: 1.0,
+    source: 'known_beverage'
+  },
+  'sparkling water': {
+    name: 'Sparkling Water',
+    serving_label: '100ml',
+    grams_per_serving: 100,
+    macros: { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 },
+    confidence: 1.0,
+    source: 'known_beverage'
+  },
+  'mineral water': {
+    name: 'Mineral Water',
+    serving_label: '100ml',
+    grams_per_serving: 100,
+    macros: { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 },
+    confidence: 1.0,
+    source: 'known_beverage'
+  },
+  'soda water': {
+    name: 'Soda Water',
+    serving_label: '100ml',
+    grams_per_serving: 100,
+    macros: { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 },
+    confidence: 1.0,
+    source: 'known_beverage'
+  },
+  'black coffee': {
+    name: 'Black Coffee',
+    serving_label: '100ml',
+    grams_per_serving: 100,
+    macros: { kcal: 2, protein_g: 0.1, carbs_g: 0, fat_g: 0, fiber_g: 0 },
+    confidence: 1.0,
+    source: 'known_beverage'
+  },
+  'coffee': {
+    name: 'Coffee (black)',
+    serving_label: '100ml',
+    grams_per_serving: 100,
+    macros: { kcal: 2, protein_g: 0.1, carbs_g: 0, fat_g: 0, fiber_g: 0 },
+    confidence: 0.9,
+    source: 'known_beverage'
+  },
+  'tea': {
+    name: 'Tea (unsweetened)',
+    serving_label: '100ml',
+    grams_per_serving: 100,
+    macros: { kcal: 1, protein_g: 0, carbs_g: 0.3, fat_g: 0, fiber_g: 0 },
+    confidence: 0.9,
+    source: 'known_beverage'
+  },
+  'green tea': {
+    name: 'Green Tea',
+    serving_label: '100ml',
+    grams_per_serving: 100,
+    macros: { kcal: 1, protein_g: 0, carbs_g: 0.2, fat_g: 0, fiber_g: 0 },
+    confidence: 1.0,
+    source: 'known_beverage'
+  },
+  'black tea': {
+    name: 'Black Tea',
+    serving_label: '100ml',
+    grams_per_serving: 100,
+    macros: { kcal: 1, protein_g: 0, carbs_g: 0.3, fat_g: 0, fiber_g: 0 },
+    confidence: 1.0,
+    source: 'known_beverage'
+  },
+  'herbal tea': {
+    name: 'Herbal Tea',
+    serving_label: '100ml',
+    grams_per_serving: 100,
+    macros: { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 },
+    confidence: 1.0,
+    source: 'known_beverage'
+  },
+  'diet coke': {
+    name: 'Diet Coke',
+    serving_label: '100ml',
+    grams_per_serving: 100,
+    macros: { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 },
+    confidence: 1.0,
+    source: 'known_beverage'
+  },
+  'diet soda': {
+    name: 'Diet Soda',
+    serving_label: '100ml',
+    grams_per_serving: 100,
+    macros: { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 },
+    confidence: 1.0,
+    source: 'known_beverage'
+  },
+  'coke zero': {
+    name: 'Coke Zero',
+    serving_label: '100ml',
+    grams_per_serving: 100,
+    macros: { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 },
+    confidence: 1.0,
+    source: 'known_beverage'
+  }
+};
+
+/**
  * Get cached Gemini results via Edge Function
  */
 export async function getCachedGemini(q: {
@@ -49,6 +168,14 @@ export async function getCachedGemini(q: {
     return null;
   }
 
+  // ✅ Step 0: Check if this is a known beverage (to avoid false matches like "beef noodle with water")
+  const normalizedName = foodName.toLowerCase().trim();
+  const knownBeverage = ZERO_CAL_BEVERAGES[normalizedName];
+  if (knownBeverage) {
+    console.log(`[geminiCache] Known beverage match: "${normalizedName}" → 0 kcal`);
+    return { ...knownBeverage };
+  }
+
   // ✅ Step 1: Check in-memory cache first
   const key = JSON.stringify(q);
   const hit = cache.get(key);
@@ -57,23 +184,30 @@ export async function getCachedGemini(q: {
     return hit.result;
   }
 
-  // ✅ Step 2: Check DB cache
+  // ✅ Step 2: Check custom_foods (permanent shared cache)
   const canonicalKey = canonicalKeyFrom(q);
   try {
-    const { data: dbHit, error: dbError } = await supabase
-      .from('food_cache')
+    const { data: customFoodHit, error: customError } = await supabase
+      .from('custom_foods')
       .select('*')
-      .eq('id', canonicalKey)  // food_cache uses 'id' as PK, not 'canonical_key'
+      .eq('normalized_key', canonicalKey)
       .maybeSingle();
 
-    if (!dbError && dbHit) {
+    if (!customError && customFoodHit) {
+      // Parse numeric fields (Supabase returns NUMERIC as strings)
       const result: MacroResult = {
-        name: dbHit.name,
-        serving_label: dbHit.serving_size || 'serving',
-        grams_per_serving: dbHit.grams_per_serving || 100,
-        macros: dbHit.macros as any,
-        confidence: dbHit.confidence || 0.7,
-        source: dbHit.source_db || 'gemini'
+        name: customFoodHit.name || foodName,
+        serving_label: customFoodHit.serving_description || '100g',
+        grams_per_serving: Number(customFoodHit.serving_size_g) || 100,
+        macros: {
+          kcal: Number(customFoodHit.calories) || 0,
+          protein_g: Number(customFoodHit.protein_g) || 0,
+          carbs_g: Number(customFoodHit.carbs_g) || 0,
+          fat_g: Number(customFoodHit.fat_g) || 0,
+          fiber_g: Number(customFoodHit.fiber_g) || 0
+        },
+        confidence: Number(customFoodHit.confidence) || 0.8,
+        source: customFoodHit.source || 'custom_foods'
       };
 
       // Populate in-memory cache
@@ -82,15 +216,141 @@ export async function getCachedGemini(q: {
         expires: Date.now() + 24 * 60 * 60 * 1000
       });
 
-      console.log(`[geminiCache] cache=db-hit id=${canonicalKey}`);
+      // Update last_queried_at and increment query_count (parse to number to avoid string concatenation)
+      const currentCount = Number(customFoodHit.query_count) || 0;
+      await supabase
+        .from('custom_foods')
+        .update({ 
+          last_queried_at: new Date().toISOString(),
+          query_count: currentCount + 1
+        })
+        .eq('id', customFoodHit.id);
+
+      console.log(`[geminiCache] cache=custom-foods-hit key=${canonicalKey}`);
       return result;
     }
+  } catch (customErr) {
+    console.warn('[geminiCache] custom_foods lookup failed:', customErr);
+    // Continue to next lookup
+  }
+
+  // ✅ Step 3: Check food_cache (USDA/temporary cache)
+  // Search by name similarity with deterministic scoring
+  try {
+    // Core search terms from foodName (ignore brand/qualifiers for better cache hits)
+    const coreName = foodName.toLowerCase().replace(/[^a-z0-9\s]+/g, ' ').trim();
+    const allTerms = coreName.split(/\s+/).filter(t => t.length > 2);
+    
+    // Brand names and qualifiers to deprioritize
+    const stopWords = new Set([
+      'costco', 'trader', 'joes', 'kirkland', 'kroger', 'walmart', 'target', 'whole', 'foods',
+      'organic', 'fresh', 'premium', 'select', 'choice', 'prime', 'grass', 'fed', 'wild', 'free', 'range',
+      'certified', 'natural', 'smoked', 'cured', 'aged'
+    ]);
+    
+    // Descriptors to deprioritize (search LAST)
+    const descriptors = new Set([
+      'raw', 'cooked', 'frozen', 'grilled', 'broiled', 'baked', 'fried', 'roasted',
+      'boneless', 'skinless', 'lean', 'fat', 'trimmed', 'whole', 'sliced', 'diced', 'chopped'
+    ]);
+    
+    // Prioritize food nouns over descriptors
+    const foodNouns = allTerms.filter(t => !stopWords.has(t) && !descriptors.has(t));
+    const descriptorTerms = allTerms.filter(t => descriptors.has(t));
+    const coreTerms = allTerms.filter(t => !stopWords.has(t));
+    
+    // Search order: food nouns first, then descriptors, then all terms
+    const searchOrder = [...foodNouns, ...descriptorTerms, ...allTerms];
+    
+    if (searchOrder.length > 0) {
+      let dbHits: any[] = [];
+      let searchTerm = '';
+      
+      // Try each term in priority order until we get hits
+      for (const term of searchOrder) {
+        const { data, error } = await supabase
+          .from('food_cache')
+          .select('*')
+          .ilike('name', `%${term}%`)
+          .limit(20);
+        
+        if (!error && data && data.length > 0) {
+          dbHits = data;
+          searchTerm = term;
+          break; // Found hits, stop searching
+        }
+      }
+
+      if (dbHits.length > 0) {
+        // Score each match for relevance
+        const scored = dbHits.map(hit => {
+          const hitName = hit.name.toLowerCase();
+          let score = 0;
+          
+          // +100: Exact match on all core terms
+          if (coreTerms.every(term => hitName.includes(term))) score += 100;
+          
+          // +50: USDA source (trusted)
+          if (hit.source_db === 'USDA') score += 50;
+          
+          // +30: Beef (prefer over bison/game for common queries)
+          if (hitName.includes('beef')) score += 30;
+          
+          // +25: Cooked state matches query context
+          const hasCooked = coreName.includes('cooked') || coreName.includes('grilled') || coreName.includes('broiled');
+          if (hasCooked && (hitName.includes('cooked') || hitName.includes('broiled'))) score += 25;
+          if (!hasCooked && hitName.includes('raw')) score += 15; // Slight preference for raw if not specified
+          
+          // +20 per matched term
+          const matchedTerms = coreTerms.filter(term => hitName.includes(term)).length;
+          score += matchedTerms * 20;
+          
+          // +15: Lean cuts (healthier default)
+          if (hitName.includes('lean') && !hitName.includes('extra lean')) score += 15;
+          if (hitName.includes('skinless') || hitName.includes('boneless')) score += 10;
+          
+          // -10: Overly specific cuts (prefer general)
+          if (hitName.match(/trimmed to \d+/)) score -= 10;
+          
+          // +5: Shorter name (more generic/common), capped
+          score += Math.max(0, Math.min(50, 150 - hitName.length));
+          
+          return { hit, score };
+        });
+        
+        // Sort by score descending, then by name for determinism
+        scored.sort((a, b) => {
+          if (b.score !== a.score) return b.score - a.score;
+          return a.hit.name.localeCompare(b.hit.name); // Alphabetical tie-break
+        });
+
+        const bestMatch = scored[0].hit;
+        
+        const result: MacroResult = {
+          name: bestMatch.name,
+          serving_label: bestMatch.serving_size || '100g',
+          grams_per_serving: bestMatch.grams_per_serving || 100,
+          macros: bestMatch.macros as any,
+          confidence: bestMatch.confidence || 0.7,
+          source: bestMatch.source_db || 'food_cache'
+        };
+
+        // Populate in-memory cache
+        cache.set(key, {
+          result,
+          expires: Date.now() + 24 * 60 * 60 * 1000
+        });
+
+        console.log(`[geminiCache] cache=food-cache-hit search="${searchTerm}" found="${bestMatch.name}" (score=${scored[0].score})`);
+        return result;
+      }
+    }
   } catch (dbErr) {
-    console.warn('[geminiCache] DB cache lookup failed:', dbErr);
+    console.warn('[geminiCache] food_cache lookup failed:', dbErr);
     // Continue to Edge Function call
   }
 
-  // ✅ Step 3: Call Edge Function
+  // ✅ Step 4: Call deployed gemini-chat Edge Function (fallback)
   try {
     // Build canonicalName for better Gemini results
     const canonicalName = [
@@ -98,84 +358,152 @@ export async function getCachedGemini(q: {
       q.name,
       q.serving_label,
       q.size_label
-    ].filter(Boolean).join(' ').trim() || undefined;
+    ].filter(Boolean).join(' ').trim() || foodName;
 
-    // Build correct payload format expected by Edge Function
-    const requestBody = {
-      foodName: foodName,
-      canonicalName: canonicalName
-    };
+    // Build prompt with examples for better results
+    const prompt = `You are a nutrition database expert. Find verifiable nutritional information for: "${canonicalName}".
 
-    const { data, error } = await supabase.functions.invoke("nutrition-gemini", {
-      body: requestBody
+Return ONLY valid JSON in this exact format (no markdown, no code blocks, no explanation):
+
+Examples of CORRECT responses:
+{"name": "Ribeye steak, cooked", "serving_label": "100g", "grams_per_serving": 100, "calories": 234, "protein_g": 28, "carbs_g": 0, "fat_g": 13, "fiber_g": 0}
+{"name": "Big Mac", "serving_label": "1 sandwich", "grams_per_serving": 219, "calories": 563, "protein_g": 26, "carbs_g": 46, "fat_g": 33, "fiber_g": 3}
+{"name": "Tuna, canned in water", "serving_label": "1 can (142g)", "grams_per_serving": 142, "calories": 128, "protein_g": 24, "carbs_g": 0, "fat_g": 3, "fiber_g": 0}
+
+CRITICAL RULES:
+1. Search USDA database, nutrition labels, or verified sources
+2. Return REAL data - never make up numbers
+3. All numbers must be positive integers or decimals
+4. If you cannot find reliable data, return: {"error": "not_found"}
+5. NO markdown formatting, NO code blocks, ONLY the JSON object
+
+Food to look up: "${canonicalName}"
+
+Your response:`;
+
+    // Call deployed gemini-chat function
+    const { data, error } = await supabase.functions.invoke("gemini-chat", {
+      body: { prompt }
     });
 
     // Enhanced error logging
     if (error) {
-      console.error('[geminiCache] Edge Function error:', {
+      console.error('[geminiCache] gemini-chat error:', {
         error,
         status: (error as any)?.status,
         message: error.message,
-        request: requestBody,
+        foodName,
         timestamp: new Date().toISOString()
       });
-      
-      if ((error as any)?.status === 400) {
-        console.error('[geminiCache] ⚠️ 400 Bad Request - check request format matches Edge Function expectations');
-      }
-      
-      // Return null to let cascade continue (no stub masking)
       return null;
     }
 
-    if (!data || typeof data !== 'object') {
-      console.error('[geminiCache] Invalid response from Edge Function:', {
+    if (!data || !data.ok || !data.text) {
+      console.error('[geminiCache] Invalid response from gemini-chat:', {
         data,
-        request: requestBody,
+        foodName,
         timestamp: new Date().toISOString()
       });
-      return null;  // Let cascade continue
+      return null;
     }
 
-    // Convert Edge Function response to MacroResult format
+    // Parse JSON from response text
+    let parsed: any;
+    try {
+      parsed = JSON.parse(data.text);
+    } catch (parseErr) {
+      console.error('[geminiCache] Failed to parse gemini-chat response:', {
+        text: data.text,
+        error: parseErr,
+        foodName
+      });
+      return null;
+    }
+
+    // Check for error response
+    if (parsed.error === "not_found") {
+      console.log('[geminiCache] Gemini could not find nutrition data for:', foodName);
+      return null;
+    }
+
+    // Convert to MacroResult format
     const result: MacroResult = {
-      name: data.name || foodName,
-      serving_label: data.serving_label || 'serving',
-      grams_per_serving: data.grams_per_serving || 100,
+      name: parsed.name || foodName,
+      serving_label: parsed.serving_label || 'serving',
+      grams_per_serving: parsed.grams_per_serving || 100,
       macros: {
-        kcal: data.macros?.kcal || 0,
-        protein_g: data.macros?.protein_g || 0,
-        carbs_g: data.macros?.carbs_g || 0,
-        fat_g: data.macros?.fat_g || 0,
-        fiber_g: data.macros?.fiber_g || 0
+        kcal: parsed.calories || 0,
+        protein_g: parsed.protein_g || 0,
+        carbs_g: parsed.carbs_g || 0,
+        fat_g: parsed.fat_g || 0,
+        fiber_g: parsed.fiber_g || 0
       },
-      confidence: data.confidence || 0.8,
+      confidence: 0.8,
       source: 'gemini'
     };
 
-    // ✅ Step 4: Persist to DB (fire and forget, don't block)
+    // ✅ Step 4: Persist to custom_foods (permanent shared cache)
     if (result.macros.kcal > 0) {  // Only cache successful lookups
-      const { error: upsertError } = await supabase.from('food_cache').upsert({
-        id: canonicalKey,  // Use 'id' as PK (matches schema)
-        name: result.name,
-        brand: q.brand || null,
-        serving_size: result.serving_label,
-        grams_per_serving: result.grams_per_serving,
-        macros: result.macros,
-        micros: { fiber_g: result.macros.fiber_g || 0 },
-        country_code: q.country?.toUpperCase() || null,
-        source_db: 'gemini',
-        confidence: result.confidence,
-        last_accessed: new Date().toISOString(),
-        expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString() // 30 days
-      }, {
-        onConflict: 'id'
-      });
+      // Check if entry already exists to avoid resetting query_count
+      const { data: existingEntry } = await supabase
+        .from('custom_foods')
+        .select('id, query_count')
+        .eq('normalized_key', canonicalKey)
+        .maybeSingle();
 
-      if (upsertError) {
-        console.warn('[geminiCache] DB cache write failed (non-blocking):', upsertError);
+      if (existingEntry) {
+        // Entry exists - update macros but preserve query_count
+        const currentCount = Number(existingEntry.query_count) || 0;
+        const { error: updateError } = await supabase
+          .from('custom_foods')
+          .update({
+            name: result.name,
+            brand: q.brand || null,
+            serving_description: result.serving_label,
+            serving_size_g: result.grams_per_serving,
+            calories: result.macros.kcal,
+            protein_g: result.macros.protein_g,
+            carbs_g: result.macros.carbs_g,
+            fat_g: result.macros.fat_g,
+            fiber_g: result.macros.fiber_g || 0,
+            source: 'gemini',
+            confidence: result.confidence,
+            last_queried_at: new Date().toISOString(),
+            query_count: currentCount + 1  // Increment existing count
+          })
+          .eq('id', existingEntry.id);
+
+        if (updateError) {
+          console.warn('[geminiCache] custom_foods update failed:', updateError);
+        } else {
+          console.log(`[geminiCache] ✅ Updated custom_foods: ${canonicalKey} (query_count: ${currentCount + 1})`);
+        }
       } else {
-        console.log(`[geminiCache] ✅ Cached to database: ${canonicalKey}`);
+        // New entry - insert with query_count = 1
+        const { error: insertError } = await supabase
+          .from('custom_foods')
+          .insert({
+            normalized_key: canonicalKey,
+            name: result.name,
+            brand: q.brand || null,
+            serving_description: result.serving_label,
+            serving_size_g: result.grams_per_serving,
+            calories: result.macros.kcal,
+            protein_g: result.macros.protein_g,
+            carbs_g: result.macros.carbs_g,
+            fat_g: result.macros.fat_g,
+            fiber_g: result.macros.fiber_g || 0,
+            source: 'gemini',
+            confidence: result.confidence,
+            last_queried_at: new Date().toISOString(),
+            query_count: 1
+          });
+
+        if (insertError) {
+          console.warn('[geminiCache] custom_foods insert failed:', insertError);
+        } else {
+          console.log(`[geminiCache] ✅ Inserted to custom_foods: ${canonicalKey}`);
+        }
       }
     }
 
@@ -199,4 +527,3 @@ export async function getCachedGemini(q: {
     return null;
   }
 }
-

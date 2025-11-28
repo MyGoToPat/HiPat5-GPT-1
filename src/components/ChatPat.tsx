@@ -1,10 +1,14 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { PatAvatar } from './PatAvatar';
+import { ArrowUp, Mic, StopCircle, Plus } from "lucide-react";
+import { PatAvatar } from "./PatAvatar";
+import ChatInput from "./ChatInput";
+import { RichMarkdownMessage } from "./chat/RichMarkdownMessage";
+import { formatAssistantText } from "../core/chat/formatAssistantText";
 import { VoiceWaveform } from './VoiceWaveform';
 import { TDEEPromptBubble } from './TDEEPromptBubble';
 import ThinkingAvatar from './common/ThinkingAvatar';
-import { Plus, Mic, Folder, Camera, Image, ArrowUp, Check } from 'lucide-react';
+import { Folder, Camera, Image, Check, Globe } from 'lucide-react';
 import { FoodVerificationScreen } from './FoodVerificationScreen';
 import { MealSuccessTransition } from './MealSuccessTransition';
 import { fetchFoodMacros } from '../lib/food';
@@ -57,6 +61,10 @@ export const ChatPat: React.FC = () => {
   // Thread management
   const [threadId, setThreadId] = useState<string>(() => newThreadId());
   const [isSending, setIsSending] = useState(false);
+  const [forceWeb, setForceWeb] = useState(false); // Manual toggle for AMA web search
+
+  // Input state
+  const [inputValue, setInputValue] = useState("");
   
   // Load initial chat state from localStorage
   const [chatState, setChatState] = useState<ChatState>({
@@ -393,6 +401,9 @@ export const ChatPat: React.FC = () => {
     onError: (error) => {
       console.error('Dictation error:', error);
       setIsDictating(false);
+    },
+    onEnd: () => {
+      setIsDictating(false);
     }
   });
 
@@ -698,22 +709,33 @@ export const ChatPat: React.FC = () => {
     { id: 'file', label: 'File', icon: Folder },
   ];
 
-  const handleSendMessage = async () => {
+  const handleSend = useCallback(() => {
+    const text = inputValue.trim();
+    if (!text) return;
+    setInputValue("");
+    if (typeof handleSendMessage === "function") {
+      handleSendMessage(text);
+    }
+  }, [inputValue]);
+
+  const handleSendMessage = async (text?: string) => {
     // GUARD: Prevent double send
     if (sendingRef.current) {
       console.log('[ChatPat] Skipping duplicate send');
       return;
     }
-    
+
     sendingRef.current = true;
-    
+
     try {
-      if (inputText.trim()) {
-        const lowerInput = inputText.toLowerCase().trim();
+      // Use provided text or fall back to inputText state
+      const messageText = text || inputText.trim();
+      if (messageText) {
+        const lowerInput = messageText.toLowerCase().trim();
 
       // SHORTCUT: If verification screen is active and user types "log" or "save", confirm it
       if (showFoodVerificationScreen && currentAnalysisResult && (lowerInput === 'log' || lowerInput === 'save')) {
-        setInputText('');
+        if (!text) setInputText(''); // Only clear if not called with text parameter
         // Trigger the same confirmation flow
         // The verification screen will call handleConfirmVerification with the data
         // We need to get the normalized meal data from FoodVerificationScreen
@@ -828,7 +850,7 @@ export const ChatPat: React.FC = () => {
       };
 
       setMessages(prev => [...prev, newMessage, thinkingMessage]);
-      setInputText('');
+      if (!text) setInputText(''); // Only clear if not called with text parameter
       setIsTyping(false);
       
       // Handle agent-specific responses
@@ -974,7 +996,11 @@ export const ChatPat: React.FC = () => {
                 userId: user.data.user.id,
                 userContext,
                 mode: 'text',
+                forceWeb: forceWeb, // Pass manual toggle state
               });
+
+              // Reset toggle after successful send
+              setForceWeb(false);
 
               // Extract macro data from tool calls if present
               let macroMetadata = null;
@@ -1688,9 +1714,16 @@ export const ChatPat: React.FC = () => {
   }
 
   return (
-    <div className="h-screen bg-pat-gradient text-white flex flex-col pt-[44px]">
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="flex-1 overflow-y-auto px-4 py-6 pb-32">
+    <div className="h-svh flex flex-col overflow-hidden">
+      {/* Scrollable messages area */}
+      <main
+        className="flex-1 overflow-y-auto px-4 py-6"
+        style={{
+          paddingBottom: "96px",
+          scrollbarGutter: "stable both-edges",
+          overscrollBehavior: "contain"
+        }}
+      >
           {/* TDEE Prompt Bubble - Always visible at top until completed */}
           <AnimatePresence>
             {showTDEEBubble && (
@@ -1704,8 +1737,10 @@ export const ChatPat: React.FC = () => {
             )}
           </AnimatePresence>
 
-          {/* Conditional conversation starters - horizontal carousel above input */}
-          {isNewUser && !isTyping && starterChips.length > 0 && messages.length === 1 && (
+          {/* Chips visibility */}
+          {(() => {
+            const showChips = inputValue.length === 0 && !isDictating && !isTyping;
+            return showChips && isNewUser && starterChips.length > 0 && messages.length === 1 && (
             <div className="fixed bottom-[76px] left-0 right-0 px-4 overflow-x-auto">
               <div className="flex gap-2 pb-2">
                 {starterChips.map((chip, index) => (
@@ -1719,7 +1754,8 @@ export const ChatPat: React.FC = () => {
                 ))}
               </div>
             </div>
-          )}
+          );
+          })()}
 
           <div className={`space-y-6 transition-opacity duration-300 ${isTyping || messages.length > 1 ? 'opacity-100' : 'opacity-0'}`}>
             {(() => {
@@ -1779,9 +1815,11 @@ export const ChatPat: React.FC = () => {
               }
 
               function renderAssistantBubble(msg: any) {
+                // Force formatting on frontend to prevent walls of text
+                const formattedText = formatAssistantText(msg.text);
                 return (
                   <div className="assistant-bubble">
-                    <div>{msg.text}</div>
+                    <RichMarkdownMessage text={formattedText} />
                     {renderVerifyCtaIfNeeded(msg)}
                   </div>
                 );
@@ -2011,135 +2049,125 @@ export const ChatPat: React.FC = () => {
                 </div>
               </div>
             )})
-            {/* Scroll anchor */}
-            <div ref={messagesEndRef} />
-          </div>
-        </div>
-        
-        {/* Frozen bottom pane - mobile optimized */}
-        <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-4 py-3 safe-area-inset-bottom">
-          {/* Plus menu popup */}
-          {showPlusMenu && (
-            <div className="absolute bottom-full left-4 right-4 mb-2 p-4 bg-gray-800 rounded-2xl shadow-xl">
-              {/* Camera action - prominent */}
-              <button
-                onClick={() => {
-                  setShowPlusMenu(false);
-                  handleChipClick('Show me what you\'re eating');
-                }}
-                className="w-full mb-3 flex items-center gap-3 px-4 py-4 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl hover:from-purple-700 hover:to-blue-700 transition-all active:scale-95"
-              >
-                <Camera size={24} className="text-white" />
-                <span className="text-white font-semibold">Take a picture</span>
-              </button>
-              
-              {/* Other options - secondary */}
-              <div className="grid grid-cols-3 gap-2">
-                {plusMenuOptions.filter(o => o.id !== 'take').map((option) => {
-                  const IconComponent = option.icon;
-                  return (
-                    <button
-                      key={option.id}
-                      onClick={() => {
-                        setShowPlusMenu(false);
-                        if (option.id === 'log-food') {
-                          // TODO: Implement food logging flow
-                          return;
-                        }
-                      }}
-                      className="flex flex-col items-center gap-2 p-3 hover:bg-gray-700 rounded-lg transition-colors"
-                    >
-                      <IconComponent size={20} className="text-gray-300" />
-                      <span className="text-xs text-gray-300">{option.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-          
-          {/* Main input row: + [Input] 🎤 👤 */}
-          <div className="flex items-center gap-2">
-            {/* Plus menu button */}
+          {/* Scroll anchor */}
+          <div ref={messagesEndRef} />
+      </main>
+
+{/* === Locked footer, single row === */}
+<footer
+  className="sticky bottom-0 z-50 bg-white border-t border-gray-200"
+  style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+>
+  <div className="mx-auto flex w-full max-w-5xl items-end gap-2 px-3 py-2">
+    {/* Plus */}
+    <button
+      type="button"
+      aria-label="More options"
+      onClick={() => setShowPlusMenu(!showPlusMenu)}
+      className="h-11 w-11 grid place-items-center rounded-full hover:bg-gray-100"
+    >
+      <Plus size={24} className="text-gray-700" />
+    </button>
+
+    {/* Web Toggle - Only for AMA */}
+    {!isDictating && !inputValue.trim().toLowerCase().startsWith('i ate') && (
+      <button
+        type="button"
+        onClick={() => setForceWeb(!forceWeb)}
+        className={`h-11 w-11 grid place-items-center rounded-full transition-colors ${
+          forceWeb ? 'bg-blue-100' : 'hover:bg-gray-100'
+        }`}
+        aria-label={forceWeb ? "Web search enabled" : "Enable web search"}
+      >
+        <Globe size={24} className={forceWeb ? 'text-blue-600' : 'text-gray-500'} />
+      </button>
+    )}
+
+    {/* Controlled input */}
+    <ChatInput
+      value={inputValue}
+      onChange={setInputValue}
+      onSend={handleSend}
+      isSending={isSending}
+      placeholder="Ask me anything"
+    />
+
+    {/* Mic */}
+    <button
+      type="button"
+      aria-label={isDictating ? "Stop dictation" : "Start dictation"}
+      onClick={isDictating ? stopDictation : startDictation}
+      className="h-11 w-11 grid place-items-center rounded-full hover:bg-gray-100"
+    >
+      {isDictating ? (
+        <StopCircle size={24} className="text-red-500" />
+      ) : (
+        <Mic size={24} className="text-gray-700" />
+      )}
+    </button>
+
+    {/* Send between Mic and Pat */}
+    <button
+      type="button"
+      aria-label="Send message"
+      onClick={handleSend}
+      disabled={isSending || inputValue.trim().length === 0}
+      className="h-11 w-11 rounded-full bg-emerald-500 text-white grid place-items-center disabled:opacity-50"
+    >
+      <ArrowUp className="h-5 w-5" strokeWidth={2.5} />
+    </button>
+
+    {/* Pat avatar */}
+    <button
+      type="button"
+      aria-label="Talk with Pat"
+      onClick={() => typeof onPatAvatarClick === "function" && onPatAvatarClick()}
+      className="h-11 w-11"
+    >
+      <PatAvatar mood={typeof getPatMood === "function" ? getPatMood() : "neutral"} />
+    </button>
+  </div>
+
+  {/* Plus menu popup */}
+  {showPlusMenu && (
+    <div className="absolute bottom-full left-4 right-4 mb-2 p-4 bg-gray-800 rounded-2xl shadow-xl">
+      {/* Camera action - prominent */}
+      <button
+        onClick={() => {
+          setShowPlusMenu(false);
+          handleChipClick('Show me what you\'re eating');
+        }}
+        className="w-full mb-3 flex items-center gap-3 px-4 py-4 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl hover:from-purple-700 hover:to-blue-700 transition-all active:scale-95"
+      >
+        <Camera size={24} className="text-white" />
+        <span className="text-white font-semibold">Take a picture</span>
+      </button>
+
+      {/* Other options - secondary */}
+      <div className="grid grid-cols-3 gap-2">
+        {plusMenuOptions.filter(o => o.id !== 'take').map((option) => {
+          const IconComponent = option.icon;
+          return (
             <button
-              onClick={() => setShowPlusMenu(!showPlusMenu)}
-              className={`flex-shrink-0 w-12 h-12 flex items-center justify-center hover:bg-gray-100 rounded-full transition-colors ${isDictating ? 'opacity-50 cursor-not-allowed' : ''}`}
-              disabled={isDictating}
+              key={option.id}
+              onClick={() => {
+                setShowPlusMenu(false);
+                if (option.id === 'log-food') {
+                  // TODO: Implement food logging flow
+                  return;
+                }
+              }}
+              className="flex flex-col items-center gap-2 p-3 hover:bg-gray-700 rounded-lg transition-colors"
             >
-              <Plus size={24} className="text-gray-600" />
+              <IconComponent size={20} className="text-gray-300" />
+              <span className="text-xs text-gray-300">{option.label}</span>
             </button>
-            
-            {/* Input field */}
-            {isDictating ? (
-              <div className="flex-1 flex items-center justify-center py-3 px-4 bg-gray-100 border border-gray-300 rounded-full">
-                <VoiceWaveform isActive={true} barCount={7} className="mr-3" />
-                <p className="text-sm text-gray-600">{inputText || "Listening..."}</p>
-              </div>
-            ) : (
-              <textarea
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && !e.shiftKey && (handleSendMessage(), e.preventDefault())}
-                placeholder="Ask me anything"
-                rows={1}
-                className="flex-1 bg-white border border-gray-300 text-gray-900 placeholder-gray-400 rounded-full px-4 py-3 text-[15px] focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none whitespace-pre-wrap break-words"
-                style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', minHeight: '48px', maxHeight: '120px' }}
-                onInput={(e) => {
-                  const target = e.target as HTMLTextAreaElement;
-                  target.style.height = 'auto';
-                  target.style.height = Math.min(target.scrollHeight, 120) + 'px';
-                }}
-              />
-            )}
-            
-            {/* Mic button */}
-            <button
-              onClick={isDictating ? stopDictation : startDictation}
-              className={`flex-shrink-0 w-12 h-12 flex items-center justify-center rounded-full transition-colors ${
-                isDictating ? 'bg-red-600 hover:bg-red-700' : 'hover:bg-gray-100'
-              }`}
-            >
-              <Mic size={24} className={isDictating ? 'text-white' : 'text-gray-600'} />
-            </button>
-            
-            {/* Pat's animated avatar */}
-            {isDictating ? (
-              <button
-                onClick={submitDictation}
-                disabled={isSending}
-                className="flex-shrink-0 w-12 h-12 bg-green-600 hover:bg-green-700 rounded-full flex items-center justify-center transition-all duration-300"
-              >
-                <Check size={20} className="text-white" />
-              </button>
-            ) : isTyping ? (
-              <button
-                onClick={handleSendMessage}
-                disabled={isSending}
-                className="flex-shrink-0 w-12 h-12 bg-blue-600 hover:bg-blue-700 rounded-full flex items-center justify-center transition-all duration-300"
-              >
-                <ArrowUp size={20} className="text-white" />
-              </button>
-            ) : (
-              <button
-                onClick={() => navigate('/voice')}
-                className="flex-shrink-0 hover:opacity-80 transition-all duration-300 relative group"
-              >
-                <PatAvatar 
-                  size={48} 
-                  mood={getPatMood()} 
-                  isListening={isDictating}
-                  isThinking={isThinking}
-                  isSpeaking={isSpeaking}
-                  animated={true}
-                />
-                <div className="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-                  Voice Chat
-                </div>
-              </button>
-            )}
-          </div>
-        </div>
+          );
+        })}
       </div>
+    </div>
+  )}
+</footer>
     </div>
   );
 };

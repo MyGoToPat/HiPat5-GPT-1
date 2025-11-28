@@ -12,8 +12,8 @@ const hasFoodTerms = (text: string) =>
 const hasQuantities = (text: string) =>
   /\b(\d+(\.\d+)?)\s*(oz|g|grams?|cups?|cup|ml|tbsp|tsp)\b/i.test(text);
 
-const looksLikeLog = (text: string) =>
-  /^\s*(i\s*ate|i\s*had|log\s*this|add\s*this)/i.test(text) || (hasFoodTerms(text) && hasQuantities(text));
+export const looksLikeLog = (text: string) =>
+  /^\s*(i\s*ate|i\s*had|log\s+(this|my\s+meal|that)|add\s+(this|my\s+meal)|for\s+(breakfast|lunch|dinner)\s+i\s+ate)\b/i.test(text);
 
 const looksLikeAskMacros = (text: string) =>
   /\b(macros?|macro|calories|protein|carbs?|fat|breakdown)\b/i.test(text);

@@ -11,6 +11,7 @@ import { getSupabase } from '../../lib/supabase';
 import { getLatestPromptOrFallback } from '../../lib/admin/prompts';
 import { sanitizeNormalizedItems } from './sanitizeNormalizedItems';
 import { PROVIDERS, type ProviderKey } from '../../agents/shared/nutrition/providers';
+import { lookupOpenFoodFacts } from './providers/openfoodfacts';
 
 // Emergency Gemini kill-switch - temporarily disabled due to 502 errors
 const GEMINI_ENABLED = false; // import.meta.env.VITE_GEMINI_NUTRITION !== 'false';
@@ -87,7 +88,7 @@ function safeJsonParse(text: string) {
 
   try {
     return JSON.parse(t);
-  } catch (e) {
+  } catch (e: any) {
     console.warn('[safeJsonParse] Initial parse failed:', e.message, 'input:', t.substring(0, 100));
   }
 
@@ -127,6 +128,90 @@ function inferMealSlotFromTime(): 'breakfast' | 'lunch' | 'dinner' | 'snack' {
   if (hour >= 11 && hour < 16) return 'lunch';
   if (hour >= 16 && hour < 22) return 'dinner';
   return 'snack';
+}
+
+/**
+ * User Custom Foods lookup
+ */
+async function lookupUserCustomFoods(normalized: any, userId?: string): Promise<any> {
+  if (!userId) return null;
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('user_custom_foods')
+      .select('*')
+      .eq('user_id', userId)
+      .ilike('name', normalized.name.trim())
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      console.warn('[custom-foods] Query error:', error);
+      return null;
+    }
+
+    if (data) {
+      console.log(`[custom-foods] Found custom food for "${normalized.name}"`);
+      return {
+        name: data.name,
+        brand: data.brand,
+        serving_label: data.serving_label,
+        grams_per_serving: data.serving_size_g || 100,
+        macros: {
+          kcal: data.calories,
+          protein_g: data.protein_g,
+          carbs_g: data.carbs_g,
+          fat_g: data.fat_g,
+          fiber_g: data.fiber_g
+        },
+        confidence: 1.0, // User defined = high confidence
+        source: 'user_custom',
+        notes: 'Your custom food'
+      };
+    }
+    return null;
+  } catch (e) {
+    console.warn('[custom-foods] Exception:', e);
+    return null;
+  }
+}
+
+/**
+ * Save resolved food to User Custom Foods
+ */
+async function saveToUserCustomFoods(item: any, userId?: string) {
+  if (!userId || !item) return;
+  try {
+    const supabase = getSupabase();
+    const payload = {
+      user_id: userId,
+      name: item.name,
+      brand: item.brand || null,
+      serving_label: item.serving_label || 'serving',
+      serving_size_g: item.grams_per_serving || 100,
+      calories: item.macros?.kcal || 0,
+      protein_g: item.macros?.protein_g || 0,
+      carbs_g: item.macros?.carbs_g || 0,
+      fat_g: item.macros?.fat_g || 0,
+      fiber_g: item.macros?.fiber_g || 0,
+      source: item.source || 'web_resolved',
+      source_url: item.source_url || null,
+      is_verified: true
+    };
+
+    const { error } = await supabase
+      .from('user_custom_foods')
+      .insert(payload);
+
+    if (error) {
+      console.warn('[custom-foods] Save failed:', error);
+    } else {
+      console.log('[custom-foods] Saved new custom food:', item.name);
+    }
+  } catch (e) {
+    console.warn('[custom-foods] Save exception:', e);
+  }
 }
 
 /**
@@ -170,109 +255,6 @@ async function lookupGlobalCache(normalized: any): Promise<any> {
     return null;
   } catch (e) {
     console.warn('[global-cache] Exception:', e);
-    return null;
-  }
-}
-
-/**
- * Brand Resolver using Gemini - final fallback for unknown foods
- */
-async function lookupBrandResolver(normalized: any): Promise<any> {
-  try {
-    const supabase = getSupabase();
-
-    // Create a specific prompt for brand resolution
-    const prompt = `You are a nutrition database expert. Find the verifiable nutritional information for this food item.
-
-Food: ${normalized.name}${normalized.brand ? ` (${normalized.brand})` : ''}${normalized.serving_label ? ` - ${normalized.serving_label}` : ''}${normalized.size_label ? ` ${normalized.size_label}` : ''}
-
-IMPORTANT: Search for official sources like USDA, FDA, or brand websites. Return ONLY valid JSON in this exact format:
-{"calories": number, "protein_g": number, "carbs_g": number, "fat_g": number, "fiber_g": number}
-
-If you cannot find reliable data, return: {"error": "not_found"}
-Do not make up numbers. Only return verified nutritional data.`;
-
-    const { data, error } = await supabase.functions.invoke('gemini-chat', {
-      body: {
-        prompt,
-        temperature: 0.1, // Low temperature for accuracy
-        max_tokens: 500
-      }
-    });
-
-    if (error || !data?.ok) {
-      console.warn('[brand-resolver] Gemini call failed:', error);
-      return null;
-    }
-
-    const responseText = data.text || '';
-    console.log('[brand-resolver] Gemini response:', responseText);
-
-    // Try to parse JSON
-    const parsed = safeJsonParse(responseText);
-    if (!parsed || parsed.error === 'not_found') {
-      console.log('[brand-resolver] No reliable data found for:', normalized.name);
-      return null;
-    }
-
-    // Validate we have required fields
-    if (typeof parsed.calories !== 'number' || typeof parsed.protein_g !== 'number' ||
-        typeof parsed.carbs_g !== 'number' || typeof parsed.fat_g !== 'number') {
-      console.warn('[brand-resolver] Invalid response format:', parsed);
-      return null;
-    }
-
-    const result = {
-      name: normalized.name,
-      serving_label: normalized.serving_label || 'serving',
-      grams_per_serving: 100, // Standard assumption
-      macros: {
-        kcal: parsed.calories,
-        protein_g: parsed.protein_g,
-        carbs_g: parsed.carbs_g,
-        fat_g: parsed.fat_g,
-        fiber_g: parsed.fiber_g || 0
-      },
-      confidence: 0.8, // Brand resolver confidence
-      source: 'brand_resolver',
-      notes: 'Data resolved by AI brand resolver'
-    };
-
-    // Cache the result for future use
-    try {
-      const cacheData = {
-        normalized_name: normalized.name.toLowerCase().trim(),
-        brand: normalized.brand || null,
-        serving_label: result.serving_label,
-        size_label: normalized.size_label || null,
-        grams_per_serving: result.grams_per_serving,
-        calories: result.macros.kcal,
-        protein_g: result.macros.protein_g,
-        carbs_g: result.macros.carbs_g,
-        fat_g: result.macros.fat_g,
-        fiber_g: result.macros.fiber_g,
-        source: 'brand_resolver',
-        confidence: result.confidence
-      };
-
-      const { error: cacheError } = await supabase
-        .from('global_nutrition_cache')
-        .insert(cacheData);
-
-      if (cacheError) {
-        console.warn('[brand-resolver] Failed to cache result:', cacheError);
-      } else {
-        console.log('[brand-resolver] Cached result for future lookups');
-      }
-    } catch (cacheErr) {
-      console.warn('[brand-resolver] Cache exception:', cacheErr);
-    }
-
-    console.log(`[brand-resolver] Successfully resolved "${normalized.name}"`);
-    return result;
-
-  } catch (e) {
-    console.warn('[brand-resolver] Exception:', e);
     return null;
   }
 }
@@ -354,25 +336,33 @@ async function lookupMacrosInCascade(items: any[], userId?: string): Promise<any
       is_branded: !!item.brand
     };
 
-    // ✅ Check global cache FIRST (fastest lookup)
-    let macroResult = await lookupGlobalCache(normalized);
-    let providerUsed = 'global_cache';
+    // ✅ Check User Custom Foods FIRST (Personal overrides)
+    let macroResult = await lookupUserCustomFoods(normalized, userId);
+    let providerUsed = 'user_custom';
 
     if (macroResult) {
-      skillsFired.push('macro_lookup_global_cache');
-      console.log(`[nutrition] Global cache found macros for "${item.name}"`);
+      skillsFired.push('macro_lookup_user_custom');
+      console.log(`[nutrition] User custom food found for "${item.name}"`);
     } else {
-      // ✅ Choose provider order based on brand status and Gemini availability
-      // Branded: brand map → gemini/openai → generic
-      // Whole foods: generic (USDA) → gemini/openai → brand resolver
-      const ORDER: (ProviderKey | 'openai' | 'brand_resolver')[] = normalized.is_branded
-        ? GEMINI_ENABLED ? ["brand", "gemini", "generic", "brand_resolver"] : ["brand", "openai", "generic", "brand_resolver"]  // Branded: brand map first
-        : GEMINI_ENABLED ? ["generic", "gemini", "brand_resolver"] : ["generic", "openai", "brand_resolver"];                   // Whole foods: USDA first, then fallback
-
-      // Always add brand_resolver as final fallback if not already included
-      if (!ORDER.includes('brand_resolver')) {
-        ORDER.push('brand_resolver');
+      // ✅ Check global cache SECOND (Shared wisdom)
+      macroResult = await lookupGlobalCache(normalized);
+      providerUsed = 'global_cache';
+      
+      if (macroResult) {
+        skillsFired.push('macro_lookup_global_cache');
+        console.log(`[nutrition] Global cache found macros for "${item.name}"`);
       }
+    }
+
+    if (!macroResult) {
+      // ✅ Choose provider order based on brand status and Gemini availability
+      // Branded: brand map → gemini/openai → generic → openfoodfacts
+      // Whole foods: generic (USDA) → gemini/openai → openfoodfacts
+      const ORDER: (ProviderKey | 'openai' | 'openfoodfacts')[] = normalized.is_branded
+        ? ["brand", "openai", "generic", "openfoodfacts"]  // Branded: brand map first
+        : ["generic", "openai", "openfoodfacts"];          // Whole foods: USDA first, then fallback
+
+      let found = false;
 
       // ✅ Try each provider in order
       for (const key of ORDER) {
@@ -380,21 +370,27 @@ async function lookupMacrosInCascade(items: any[], userId?: string): Promise<any
 
         if (key === 'openai') {
           providerFn = lookupOpenAI;
-          console.log(`[nutrition] trying openai provider for "${item.name}"`);
-        } else if (key === 'brand_resolver') {
-          providerFn = lookupBrandResolver;
-          console.log(`[nutrition] trying brand_resolver for "${item.name}"`);
+        } else if (key === 'openfoodfacts') {
+          providerFn = lookupOpenFoodFacts;
         } else {
           providerFn = PROVIDERS[key];
         }
 
         if (providerFn) {
           try {
+            // OpenFoodFacts provider signature matches macro provider signature
             macroResult = await providerFn(normalized, userId);
             if (macroResult && macroResult.macros && macroResult.macros.kcal > 0) {
               providerUsed = key;
               skillsFired.push(`macro_lookup_${key}`); // Track skill usage
               console.log(`[nutrition] Provider ${key} found macros for "${item.name}"`);
+              
+              // ✨ WRITE-BACK: If found via Internet (OpenFoodFacts), save to Custom Foods
+              if (key === 'openfoodfacts') {
+                saveToUserCustomFoods(macroResult, userId);
+              }
+              
+              found = true;
               break;
             }
           } catch (err) {
@@ -405,19 +401,13 @@ async function lookupMacrosInCascade(items: any[], userId?: string): Promise<any
       }
 
       // ✅ If still no result, try Brand Resolver as final fallback
-      if (!macroResult || !macroResult.macros || macroResult.macros.kcal === 0) {
-        console.log(`[nutrition] Trying Brand Resolver for "${item.name}"`);
-        macroResult = await lookupBrandResolver(normalized);
-        if (macroResult) {
-          providerUsed = 'brand_resolver';
-          skillsFired.push('macro_lookup_brand_resolver');
-          console.log(`[nutrition] Brand Resolver found macros for "${item.name}"`);
-        }
+      if (!found && (!macroResult || !macroResult.macros || macroResult.macros.kcal === 0)) {
+        // No other resolver available
       }
 
-      // ✅ Only use stub if ALL providers including Brand Resolver failed
+      // ✅ Only use stub if ALL providers including OpenFoodFacts failed
       if (!macroResult || !macroResult.macros || macroResult.macros.kcal === 0) {
-        console.warn(`[nutrition] All providers including Brand Resolver failed for "${item.name}", using stub`);
+        console.warn(`[nutrition] All providers including OpenFoodFacts failed for "${item.name}", using stub`);
         macroResult = {
           name: item.name,
           serving_label: item.unit || 'serving',
@@ -447,7 +437,8 @@ async function lookupMacrosInCascade(items: any[], userId?: string): Promise<any
       fiber_g: macroResult.macros.fiber_g || 0,
       confidence: macroResult.confidence || 0.1,
       source: macroResult.source || 'unknown',
-      provider: providerUsed
+      provider: providerUsed,
+      source_url: macroResult.source_url
     });
   }
 
@@ -701,4 +692,3 @@ Rules:
     };
   }
 }
-

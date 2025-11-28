@@ -44,7 +44,7 @@ export async function executePostAgents(
   }
 
   const postAgents = (swarm.agents || [])
-    .filter(a => a.enabled && a.phase === 'post')
+    .filter(a => a.enabled && (a.phase || '').toLowerCase() === 'post')
     .sort((a, b) => a.order - b.order);
 
   if (postAgents.length === 0) {

@@ -571,6 +571,18 @@ export const DashboardPage: React.FC = () => {
                   <Mic size={20} />
                   <span className="text-sm">Talk with Pat</span>
                 </button>
+                <button
+                  onClick={() => navigate('/log')}
+                  className="flex items-center gap-2 px-6 py-3 bg-orange-600 hover:bg-orange-700 rounded-xl text-white font-medium transition-all duration-200 min-h-[44px] flex-1 max-w-[200px] justify-center"
+                >
+                  <span className="text-sm">Log a Meal</span>
+                </button>
+                <button
+                  onClick={() => navigate('/tdee')}
+                  className="flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-700 rounded-xl text-white font-medium transition-all duration-200 min-h-[44px] flex-1 max-w-[200px] justify-center"
+                >
+                  <span className="text-sm">TDEE</span>
+                </button>
               </div>
             </div>
           </div>

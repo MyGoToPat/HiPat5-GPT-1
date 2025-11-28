@@ -14,6 +14,10 @@ import { loadRoutesOnce, getCachedRoutes } from '../router/routesCache';
 import { decideRoute } from '../router/semanticRouter';
 import { rankTopPreferences, prefsToSystemLine } from '../memory/preferences';
 import { TMWYA_TOOL } from '../nutrition/tools';
+import { detectFoodEvent } from '../intent/foodDetector';
+import { detectUnDietIntent, convertWaterToMl } from '../intent/undietDetector';
+import { startUnDiet, logWaterIntake, logBathroomVisit, getTodaysWaterIntake } from '../../lib/undiet/tracking';
+import { checkUnDietTrigger, getUnDietProgressMessage } from '../../lib/undiet/undietTrigger';
 
 const TRIGGER_WORDS = /\b(source|link|links|cite|verify|latest|current|news|today|this week|20\d{2}|19\d{2})\b/i;
 
@@ -109,7 +113,425 @@ export async function handleUserMessage(
     }
   }
 
-  // Step 1.5: Semantic routing with fast path
+  // STEP 1.0: UnDiet intent detection (HIGHEST PRIORITY - before food detection)
+  // Handles water logging, bathroom tracking, and UnDiet program start
+  console.log('='.repeat(60));
+  console.log('[handleUserMessage] STEP 1.0: UnDiet Intent Detection');
+  console.log('[handleUserMessage] Input message:', message);
+  
+  const undietIntent = detectUnDietIntent(message);
+  
+  // DETAILED DEBUG: Log the full intent result
+  console.log('[handleUserMessage] UnDiet Intent Result:', JSON.stringify({
+    isBeverageLog: undietIntent.isBeverageLog,
+    isWaterLog: undietIntent.isWaterLog,
+    beverageCategory: undietIntent.beverageCategory,
+    beverageName: undietIntent.beverageName,
+    waterAmount: undietIntent.waterAmount,
+    waterUnit: undietIntent.waterUnit,
+    containerType: undietIntent.containerType,
+    confidence: undietIntent.confidence,
+    isBathroomLog: undietIntent.isBathroomLog,
+    isUnDietStart: undietIntent.isUnDietStart
+  }, null, 2));
+  
+  // Track water logging message for combining with food responses
+  let waterLoggedMessage: string | null = null;
+  
+  // Check if beverage was detected
+  if (undietIntent.isBeverageLog) {
+    console.log('[handleUserMessage] ✅ BEVERAGE DETECTED - Will handle as hydration, NOT food');
+  } else {
+    console.log('[handleUserMessage] ❌ No beverage detected - will continue to food detection');
+  }
+  console.log('='.repeat(60));
+  
+  if (undietIntent.confidence > 0.8) {
+    // Handle UnDiet program start
+    if (undietIntent.isUnDietStart) {
+      console.info('[undiet] User wants to start UnDiet program');
+      const result = await startUnDiet(context.userId);
+      
+      if (result.success) {
+        const responseText = "Perfect! Your 14-day UnDiet observation period starts today. Just keep telling me everything you eat and drink - no restrictions, no changes. I'll track it all and on Day 14, I'll give you personalized feedback based on YOUR actual patterns. Let's do this! 🎯";
+        await storeMessage(sessionId, 'assistant', responseText);
+        
+        return {
+          response: responseText,
+          intent: 'undiet_start',
+          intentConfidence: 1.0,
+          modelUsed: 'undiet-tracker',
+          estimatedCost: 0,
+          roleData: null,
+          toolCalls: null,
+          rawData: null
+        };
+      } else {
+        const responseText = result.error || "I couldn't start your UnDiet program right now. Please try again.";
+        await storeMessage(sessionId, 'assistant', responseText);
+        
+        return {
+          response: responseText,
+          intent: 'undiet_start_error',
+          intentConfidence: 1.0,
+          modelUsed: 'undiet-tracker',
+          estimatedCost: 0,
+          roleData: null,
+          toolCalls: null,
+          rawData: null
+        };
+      }
+    }
+    
+    // Handle beverage/water intake logging
+    // Check if message ALSO contains food items - if so, log beverage but continue to food processing
+    if (undietIntent.isBeverageLog && undietIntent.waterAmount && undietIntent.waterUnit) {
+      console.log('='.repeat(60));
+      console.log('[handleUserMessage] 🥤 BEVERAGE LOGGING PATH ENTERED');
+      console.log('[handleUserMessage] Beverage details:', {
+        category: undietIntent.beverageCategory,
+        name: undietIntent.beverageName,
+        amount: undietIntent.waterAmount,
+        unit: undietIntent.waterUnit,
+        container: undietIntent.containerType
+      });
+      
+      const beverageType = undietIntent.beverageCategory || 'water';
+      const beverageName = undietIntent.beverageName || 'water';
+      console.info('[undiet] Beverage logging detected:', beverageName, undietIntent.waterAmount, undietIntent.waterUnit);
+      const amountMl = convertWaterToMl(undietIntent.waterAmount, undietIntent.waterUnit);
+      console.log('[handleUserMessage] Converted to ML:', amountMl);
+      const result = await logWaterIntake(context.userId, amountMl, undefined, beverageType, beverageName);
+      
+      // Check if message also contains food (peek ahead)
+      const foodDetectPeek = detectFoodEvent(message);
+      const alsoHasFood = foodDetectPeek.wantsLog || foodDetectPeek.wantsMacros || foodDetectPeek.isFoodEvent;
+      
+      if (result.success) {
+        const totalToday = await getTodaysWaterIntake(context.userId);
+        const totalLiters = (totalToday / 1000).toFixed(1);
+        const effectiveHydration = result.effectiveHydration || amountMl;
+        const isWater = beverageType === 'water';
+        
+        // Format display name
+        const displayName = beverageName.charAt(0).toUpperCase() + beverageName.slice(1);
+        
+        if (alsoHasFood) {
+          // Log beverage message for later, continue to food processing
+          const hydrationNote = isWater ? '' : ` (${effectiveHydration}ml effective hydration)`;
+          waterLoggedMessage = `Logged ${amountMl}ml of ${displayName}${hydrationNote} (${totalLiters}L total today). 💧`;
+          console.info('[undiet] Beverage logged, continuing to food processing');
+        } else {
+          // Only beverage, return immediately
+          const hydrationNote = isWater ? '' : `\nThat counts as ${effectiveHydration}ml toward your hydration goal.`;
+          const responseText = `Logged ${amountMl}ml of ${displayName}! You've had ${totalLiters}L today.${hydrationNote} 💧`;
+          await storeMessage(sessionId, 'assistant', responseText);
+          
+          return {
+            response: responseText,
+            intent: 'beverage_log',
+            intentConfidence: 1.0,
+            modelUsed: 'undiet-tracker',
+            estimatedCost: 0,
+            roleData: null,
+            toolCalls: null,
+            rawData: null
+          };
+        }
+      } else {
+        const responseText = `I couldn't log your ${beverageName} intake right now. ${result.error || 'Please try again.'}`;
+        await storeMessage(sessionId, 'assistant', responseText);
+        
+        return {
+          response: responseText,
+          intent: 'beverage_log_error',
+          intentConfidence: 1.0,
+          modelUsed: 'undiet-tracker',
+          estimatedCost: 0,
+          roleData: null,
+          toolCalls: null,
+          rawData: null
+        };
+      }
+    }
+    
+    // Handle bathroom logging
+    if (undietIntent.isBathroomLog && undietIntent.bathroomType) {
+      console.info('[undiet] Bathroom logging detected:', undietIntent.bathroomType);
+      const result = await logBathroomVisit(context.userId, undietIntent.bathroomType);
+      
+      if (result.success) {
+        const responseText = undietIntent.bathroomType === 'bowel_movement'
+          ? "Logged! Your digestive health tracking is part of understanding your body's patterns. 📊"
+          : "Logged! Tracking all aspects helps build a complete picture. ✅";
+        await storeMessage(sessionId, 'assistant', responseText);
+        
+        return {
+          response: responseText,
+          intent: 'bathroom_log',
+          intentConfidence: 1.0,
+          modelUsed: 'undiet-tracker',
+          estimatedCost: 0,
+          roleData: null,
+          toolCalls: null,
+          rawData: null
+        };
+      } else {
+        const responseText = `I couldn't log that right now. ${result.error || 'Please try again.'}`;
+        await storeMessage(sessionId, 'assistant', responseText);
+        
+        return {
+          response: responseText,
+          intent: 'bathroom_log_error',
+          intentConfidence: 1.0,
+          modelUsed: 'undiet-tracker',
+          estimatedCost: 0,
+          roleData: null,
+          toolCalls: null,
+          rawData: null
+        };
+      }
+    }
+  }
+
+  // STEP 1.1: Deterministic food event detection (BEFORE embeddings/semantic routing)
+  console.log('='.repeat(60));
+  console.log('[handleUserMessage] STEP 1.1: Food Event Detection');
+  console.log('[handleUserMessage] ⚠️ If we reach here, beverage detection did NOT handle the message');
+  
+  const foodDetect = detectFoodEvent(message);
+  console.log('[handleUserMessage] Food detection result:', JSON.stringify(foodDetect, null, 2));
+  console.info('[router-final]', { 
+    route: foodDetect.wantsLog ? 'TMWYA' : foodDetect.wantsMacros ? 'TMWYA' : 'AMA', 
+    reason: foodDetect.why,
+    wantsLog: foodDetect.wantsLog,
+    wantsMacros: foodDetect.wantsMacros,
+    isFoodEvent: foodDetect.isFoodEvent
+  });
+  
+  // Import processNutrition for TMWYA pipeline (used for both food events and macro queries)
+  const { processNutrition } = await import('../nutrition/unifiedPipeline');
+  
+  // ⚠️ PRIORITY ORDER: wantsLog > isFoodEvent > wantsMacros
+  // This ensures "log this and macros" routes to logging flow (not macros-only)
+  
+  // PRIORITY 1: Handle logging intent (highest priority)
+  if (foodDetect.wantsLog) {
+    console.info('[router] hard-route=TMWYA reason=log intent (highest priority)');
+    const pipelineResult = await processNutrition({
+      message,
+      userId: context.userId,
+      sessionId,
+      showLogButton: true // Show log button for logging flow
+    });
+    
+    if (pipelineResult.success && pipelineResult.roleData) {
+      // Include water logging message if water was also logged
+      const baseText = "I've prepared your meal. Please verify and log.";
+      const responseText = waterLoggedMessage 
+        ? `${waterLoggedMessage}\n\n${baseText}`
+        : baseText;
+      const responseRoleData = { 
+        ...pipelineResult.roleData, 
+        routerWhy: waterLoggedMessage ? "User logged water and food together" : "User asked to log" 
+      };
+      
+      // Persist assistant message with roleData
+      await storeMessage(sessionId, 'assistant', responseText, responseRoleData);
+      
+      return {
+        response: responseText,
+        intent: waterLoggedMessage ? 'water_and_meal_logging' : 'meal_logging',
+        intentConfidence: 1.0,
+        modelUsed: 'tmwya-pipeline',
+        estimatedCost: 0,
+        roleData: responseRoleData,
+        toolCalls: null,
+        rawData: null
+      };
+    }
+  }
+  
+  // PRIORITY 2: Handle food events with context-aware clarifier
+  if (foodDetect.isFoodEvent) {
+    console.info('[router] food event detected: %s', foodDetect.why);
+    
+    // Include water logging message if water was also logged
+    const baseText = "Do you want the macros, or should I log this meal?";
+    const responseText = waterLoggedMessage 
+      ? `${waterLoggedMessage}\n\n${baseText}`
+      : baseText;
+    const responseRoleData = {
+      type: 'clarifier',
+      options: [
+        { id: 'macros', label: 'Show Macros' },
+        { id: 'log-it', label: 'Log It' }
+      ],
+      originalMessage: message,
+      routerWhy: "Food event detected without clear preference"
+    };
+    
+    // Persist assistant clarifier message with roleData for follow-up context
+    await storeMessage(sessionId, 'assistant', responseText, responseRoleData);
+    
+    // Show clarifier chips for ambiguous food events
+    return {
+      response: responseText,
+      intent: 'clarification_needed',
+      intentConfidence: 1.0,
+      modelUsed: 'food-detector',
+      estimatedCost: 0,
+      roleData: responseRoleData,
+      toolCalls: null,
+      rawData: null
+    };
+  }
+  
+  // CONTEXT DETECTION: Handle follow-up responses to clarifier
+  // E.g., "yes give me macros" after "I ate a hot dog" or "I had 2 Ben & Jerry's last night"
+  // Uses STRUCTURED DATA from previous meal parsing (not fragile regex)
+  const isFollowUp = /^(yes|sure|okay|ok|yeah|yep|yup|macros?|log it|show me)/i.test(message.trim());
+  if (isFollowUp && messageHistory.length > 0) {
+    // Look back for structured meal data from previous processNutrition calls
+    let foodContext = '';
+    let parsedMealData: any = null;
+    
+    // Search recent history for assistant messages with meal_card roleData
+    const recentMessages = messageHistory.slice(-5).reverse();
+    for (const msg of recentMessages) {
+      if (msg.role === 'assistant' && msg.roleData) {
+        // Check for clarifier with originalMessage
+        if (msg.roleData.type === 'clarifier' && msg.roleData.originalMessage) {
+          foodContext = msg.roleData.originalMessage;
+          console.log('[context-detect] Extracted from clarifier:', foodContext);
+          break;
+        }
+        // Check for meal_card with parsed items
+        if (msg.roleData.type === 'meal_card' && msg.roleData.items) {
+          parsedMealData = msg.roleData;
+          // Reconstruct food description from parsed items
+          foodContext = parsedMealData.items.map((item: any) => 
+            `${item.qty || ''} ${item.name}`.trim()
+          ).join(', ');
+          console.log('[context-detect] Extracted from parsed meal:', foodContext);
+          break;
+        }
+      }
+    }
+    
+    // Fallback to user's original food message if no structured data found
+    // Extract only the meal phrase, not the entire conversation
+    if (!foodContext) {
+      for (const msg of recentMessages) {
+        if (msg.role === 'user' && /(?:ate|had|drank|eating|drinking)/i.test(msg.content)) {
+          // Extract just the food part, not the whole sentence
+          const match = msg.content.match(/(?:ate|had|drank|eating|drinking)\s+(.+?)(?:\.|!|\?|$)/i);
+          if (match) {
+            foodContext = match[1].trim();
+            console.log('[context-detect] Fallback extracted food phrase:', foodContext);
+            break;
+          }
+        }
+      }
+    }
+    
+    if (foodContext) {
+      // Re-process with food context
+      const enrichedMessage = message.toLowerCase().includes('macro') 
+        ? `what are the macros of ${foodContext}`
+        : `log this meal: ${foodContext}`;
+      
+      console.log('[context-detect] Enriched message:', enrichedMessage);
+      // Re-detect with enriched message
+      const enrichedDetect = detectFoodEvent(enrichedMessage);
+      
+      if (enrichedDetect.wantsMacros) {
+        const pipelineResult = await processNutrition({
+          message: enrichedMessage,
+          userId: context.userId,
+          sessionId,
+          showLogButton: false
+        });
+        
+        if (pipelineResult.success && pipelineResult.roleData) {
+          const responseText = `Here are the macros.`;
+          const responseRoleData = { ...pipelineResult.roleData, routerWhy: "Context-aware follow-up: macros" };
+          
+          // Persist assistant message with roleData
+          await storeMessage(sessionId, 'assistant', responseText, responseRoleData);
+          
+          return {
+            response: responseText,
+            intent: 'nutrition_info',
+            intentConfidence: 1.0,
+            modelUsed: 'tmwya-pipeline',
+            estimatedCost: 0,
+            roleData: responseRoleData,
+            toolCalls: null,
+            rawData: null
+          };
+        }
+      } else if (enrichedDetect.wantsLog) {
+        const pipelineResult = await processNutrition({
+          message: enrichedMessage,
+          userId: context.userId,
+          sessionId,
+          showLogButton: true
+        });
+        
+        if (pipelineResult.success && pipelineResult.roleData) {
+          const responseText = `I've prepared your meal for logging.`;
+          const responseRoleData = { ...pipelineResult.roleData, routerWhy: "Context-aware follow-up: logging" };
+          
+          // Persist assistant message with roleData
+          await storeMessage(sessionId, 'assistant', responseText, responseRoleData);
+          
+          return {
+            response: responseText,
+            intent: 'meal_logging',
+            intentConfidence: 1.0,
+            modelUsed: 'tmwya-pipeline',
+            estimatedCost: 0,
+            roleData: responseRoleData,
+            toolCalls: null,
+            rawData: null
+          };
+        }
+      }
+    }
+  }
+  
+  // PRIORITY 3: Handle macros-only queries (lowest priority, only when no log/food intent)
+  if (foodDetect.wantsMacros) {
+    console.info('[router] hard-route=TMWYA reason=macros query');
+    const pipelineResult = await processNutrition({
+      message,
+      userId: context.userId,
+      sessionId,
+      showLogButton: false // Macros only, no log button
+    });
+    
+    if (pipelineResult.success && pipelineResult.roleData) {
+      const responseText = "Here are the macros for your food.";
+      const responseRoleData = { ...pipelineResult.roleData, routerWhy: "User asked for macros" };
+      
+      // Persist assistant message with roleData
+      await storeMessage(sessionId, 'assistant', responseText, responseRoleData);
+      
+      return {
+        response: responseText,
+        intent: 'nutrition_info',
+        intentConfidence: 1.0,
+        modelUsed: 'tmwya-pipeline',
+        estimatedCost: 0,
+        roleData: responseRoleData,
+        toolCalls: null,
+        rawData: null
+      };
+    }
+  }
+
+  // Step 1.5: Semantic routing with fast path (fallback when no food event detected)
   let routeDecision: any = null;
   let used_web = false;
 
@@ -435,8 +857,8 @@ Please acknowledge this meal logging and provide a brief summary.`;
     assistantText = "Okay — how can I help?";
   }
 
-  // Step 7: Store assistant response
-  await storeMessage(sessionId, 'assistant', assistantText);
+  // Step 7: Store assistant response with roleData for context retention
+  await storeMessage(sessionId, 'assistant', assistantText, roleData || undefined);
 
   return {
     response: assistantText,
