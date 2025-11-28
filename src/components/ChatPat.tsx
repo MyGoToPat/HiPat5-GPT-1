@@ -390,10 +390,13 @@ export const ChatPat: React.FC = () => {
     onResult: (transcript, isFinal) => {
       setInputValue(transcript);
       if (isFinal && transcript.trim()) {
-        // Auto-submit after a brief pause
+        // Auto-submit after a brief pause - pass transcript directly to avoid stale closure
         setTimeout(() => {
-          if (isDictating && transcript.trim()) {
-            handleSendMessage();
+          if (isDictatingRef.current && transcript.trim()) {
+            // Use ref to get latest handleSendMessage and pass transcript directly
+            if (handleSendMessageRef.current) {
+              handleSendMessageRef.current(transcript);
+            }
             stopDictation();
           }
         }, 1500);

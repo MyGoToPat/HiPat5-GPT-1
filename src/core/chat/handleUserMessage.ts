@@ -350,6 +350,22 @@ export async function handleUserMessage(
         toolCalls: null,
         rawData: null
       };
+    } else {
+      // Handle pipeline failure - return helpful error message
+      console.warn('[router] processNutrition failed for wantsLog:', pipelineResult);
+      const errorText = "I couldn't find nutrition information for that food. Could you try describing it differently, or check the spelling?";
+      await storeMessage(sessionId, 'assistant', errorText);
+      
+      return {
+        response: errorText,
+        intent: 'meal_logging_error',
+        intentConfidence: 1.0,
+        modelUsed: 'tmwya-pipeline',
+        estimatedCost: 0,
+        roleData: null,
+        toolCalls: null,
+        rawData: null
+      };
     }
   }
   

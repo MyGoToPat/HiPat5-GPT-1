@@ -206,7 +206,7 @@ export async function getCachedGemini(q: {
       // Parse numeric fields (Supabase returns NUMERIC as strings)
       const result: MacroResult = {
         name: customFoodHit.name || foodName,
-        serving_label: customFoodHit.serving_description || '100g',
+        serving_label: customFoodHit.serving_label || '100g',
         grams_per_serving: Number(customFoodHit.serving_size_g) || 100,
         macros: {
           kcal: Number(customFoodHit.calories) || 0,
@@ -448,11 +448,13 @@ Your response:`;
     };
 
     // ✅ Step 4: Persist to user_custom_foods (permanent shared cache)
-    if (result.macros.kcal > 0) {  // Only cache successful lookups
-      // Check if entry already exists by name (and brand if present)
+    // Only persist if userId is available (security: prevents anonymous overwrites)
+    if (result.macros.kcal > 0 && userId) {
+      // Check if entry already exists for THIS USER by name (and brand if present)
       let existingQuery = supabase
         .from('user_custom_foods')
-        .select('id')
+        .select('id, user_id')
+        .eq('user_id', userId) // SECURITY: Only check user's own entries
         .ilike('name', result.name);
       
       if (q.brand) {
@@ -462,7 +464,7 @@ Your response:`;
       const { data: existingEntry } = await existingQuery.maybeSingle();
 
       if (existingEntry) {
-        // Entry exists - update macros
+        // Entry exists for this user - update macros
         const { error: updateError } = await supabase
           .from('user_custom_foods')
           .update({
@@ -478,15 +480,16 @@ Your response:`;
             source: 'gemini',
             updated_at: new Date().toISOString()
           })
-          .eq('id', existingEntry.id);
+          .eq('id', existingEntry.id)
+          .eq('user_id', userId); // SECURITY: Double-check user ownership
 
         if (updateError) {
           console.warn('[geminiCache] user_custom_foods update failed:', updateError);
         } else {
           console.log(`[geminiCache] ✅ Updated user_custom_foods: ${result.name}`);
         }
-      } else if (userId) {
-        // New entry - insert (only if userId is available)
+      } else {
+        // New entry for this user - insert
         const { error: insertError } = await supabase
           .from('user_custom_foods')
           .insert({
@@ -508,9 +511,9 @@ Your response:`;
         } else {
           console.log(`[geminiCache] ✅ Inserted to user_custom_foods: ${result.name}`);
         }
-      } else {
-        console.log(`[geminiCache] Skipping user_custom_foods insert (no userId)`);
       }
+    } else if (result.macros.kcal > 0) {
+      console.log(`[geminiCache] Skipping user_custom_foods persist (no userId)`);
     }
 
     // ✅ Step 5: Populate in-memory cache
