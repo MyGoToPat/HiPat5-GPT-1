@@ -2077,8 +2077,8 @@ export const ChatPat: React.FC = () => {
       <Plus size={24} className="text-gray-700" />
     </button>
 
-    {/* Web Toggle - Only for AMA */}
-    {!isDictating && !inputValue.trim().toLowerCase().startsWith('i ate') && (
+    {/* Web Toggle - Always visible, routing logic decides whether to use web */}
+    {!isDictating && (
       <button
         type="button"
         onClick={() => setForceWeb(!forceWeb)}

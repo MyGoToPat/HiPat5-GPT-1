@@ -46,10 +46,10 @@ export const FOOD_LEXICON = new RegExp(
     'chocolate', 'ice\\s*cream', 'popcorn', 'pretzel', 'cracker',
     'protein\\s*bar', 'energy\\s*bar', 'granola\\s*bar',
     
-    // Beverages (solid foods primarily, but common mentions)
-    'coffee', 'tea', 'latte', 'cappuccino', 'espresso', 'soda', 'pop',
-    'juice', 'smoothie', 'shake', 'protein\\s*shake', 'milkshake',
-    'beer', 'wine', 'cocktail', 'drink', 'boba',
+    // Beverages - REMOVED to avoid conflict with UnDiet beverage tracking
+    // Pure beverages (coffee, tea, water, soda, beer, wine) are handled by undietDetector.ts
+    // Only include food-like beverages that have significant calories/macros
+    'smoothie', 'protein\\s*shake', 'milkshake', 'boba',
     
     // Asian Food
     'sushi', 'ramen', 'pho', 'curry', 'stir\\s*fry', 'fried\\s*rice',

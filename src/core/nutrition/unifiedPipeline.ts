@@ -178,12 +178,30 @@ async function lookupUserCustomFoods(normalized: any, userId?: string): Promise<
 }
 
 /**
- * Save resolved food to User Custom Foods
+ * Save resolved food to User Custom Foods (with upsert to prevent duplicates)
  */
 async function saveToUserCustomFoods(item: any, userId?: string) {
   if (!userId || !item) return;
   try {
     const supabase = getSupabase();
+    const normalizedName = item.name?.toLowerCase().trim();
+    const normalizedBrand = item.brand?.toLowerCase().trim() || null;
+    
+    // Check if entry already exists for this user
+    let existingQuery = supabase
+      .from('user_custom_foods')
+      .select('id')
+      .eq('user_id', userId)
+      .ilike('name', normalizedName);
+    
+    if (normalizedBrand) {
+      existingQuery = existingQuery.ilike('brand', normalizedBrand);
+    } else {
+      existingQuery = existingQuery.is('brand', null);
+    }
+    
+    const { data: existing } = await existingQuery.maybeSingle();
+    
     const payload = {
       user_id: userId,
       name: item.name,
@@ -200,14 +218,30 @@ async function saveToUserCustomFoods(item: any, userId?: string) {
       is_verified: true
     };
 
-    const { error } = await supabase
-      .from('user_custom_foods')
-      .insert(payload);
-
-    if (error) {
-      console.warn('[custom-foods] Save failed:', error);
+    if (existing) {
+      // Update existing entry
+      const { error } = await supabase
+        .from('user_custom_foods')
+        .update({ ...payload, updated_at: new Date().toISOString() })
+        .eq('id', existing.id)
+        .eq('user_id', userId); // Security: verify ownership
+      
+      if (error) {
+        console.warn('[custom-foods] Update failed:', error);
+      } else {
+        console.log('[custom-foods] Updated existing custom food:', item.name);
+      }
     } else {
-      console.log('[custom-foods] Saved new custom food:', item.name);
+      // Insert new entry
+      const { error } = await supabase
+        .from('user_custom_foods')
+        .insert(payload);
+
+      if (error) {
+        console.warn('[custom-foods] Insert failed:', error);
+      } else {
+        console.log('[custom-foods] Saved new custom food:', item.name);
+      }
     }
   } catch (e) {
     console.warn('[custom-foods] Save exception:', e);
@@ -227,9 +261,9 @@ async function lookupGlobalCache(normalized: any): Promise<any> {
       .eq('brand', normalized.brand || null)
       .order('created_at', { ascending: false })
       .limit(1)
-      .single();
+      .maybeSingle(); // Use maybeSingle() to gracefully handle 0 or 1 rows
 
-    if (error && error.code !== 'PGRST116') { // PGRST116 = no rows found
+    if (error) {
       console.warn('[global-cache] Query error:', error);
       return null;
     }

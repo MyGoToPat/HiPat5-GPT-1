@@ -186,54 +186,59 @@ export async function getCachedGemini(q: {
     return hit.result;
   }
 
-  // ✅ Step 2: Check user_custom_foods (permanent shared cache)
-  // Query by name (and optionally brand) since table doesn't have normalized_key column
+  // ✅ Step 2: Check user_custom_foods (user's personal cache)
+  // Query by name (and optionally brand) - MUST filter by user_id for security
   const searchName = q.name?.trim().toLowerCase() || foodName.toLowerCase();
   try {
-    let query = supabase
-      .from('user_custom_foods')
-      .select('*')
-      .ilike('name', searchName);
-    
-    // If brand is specified, also filter by brand
-    if (q.brand) {
-      query = query.ilike('brand', q.brand.trim());
-    }
-    
-    const { data: customFoodHit, error: customError } = await query.maybeSingle();
-
-    if (!customError && customFoodHit) {
-      // Parse numeric fields (Supabase returns NUMERIC as strings)
-      const result: MacroResult = {
-        name: customFoodHit.name || foodName,
-        serving_label: customFoodHit.serving_label || '100g',
-        grams_per_serving: Number(customFoodHit.serving_size_g) || 100,
-        macros: {
-          kcal: Number(customFoodHit.calories) || 0,
-          protein_g: Number(customFoodHit.protein_g) || 0,
-          carbs_g: Number(customFoodHit.carbs_g) || 0,
-          fat_g: Number(customFoodHit.fat_g) || 0,
-          fiber_g: Number(customFoodHit.fiber_g) || 0
-        },
-        confidence: Number(customFoodHit.confidence) || 0.8,
-        source: customFoodHit.source || 'user_custom_foods'
-      };
-
-      // Populate in-memory cache
-      cache.set(key, {
-        result,
-        expires: Date.now() + 24 * 60 * 60 * 1000
-      });
-
-      // Update updated_at timestamp on cache hit
-      await supabase
+    // Only query user_custom_foods if we have a userId
+    if (userId) {
+      let query = supabase
         .from('user_custom_foods')
-        .update({ updated_at: new Date().toISOString() })
-        .eq('id', customFoodHit.id);
+        .select('*')
+        .eq('user_id', userId) // SECURITY: Only return user's own custom foods
+        .ilike('name', searchName);
+      
+      // If brand is specified, also filter by brand
+      if (q.brand) {
+        query = query.ilike('brand', q.brand.trim());
+      }
+      
+      const { data: customFoodHit, error: customError } = await query.maybeSingle();
 
-      console.log(`[geminiCache] cache=custom-foods-hit name=${result.name}`);
-      return result;
-    }
+      if (!customError && customFoodHit) {
+        // Parse numeric fields (Supabase returns NUMERIC as strings)
+        const result: MacroResult = {
+          name: customFoodHit.name || foodName,
+          serving_label: customFoodHit.serving_label || '100g',
+          grams_per_serving: Number(customFoodHit.serving_size_g) || 100,
+          macros: {
+            kcal: Number(customFoodHit.calories) || 0,
+            protein_g: Number(customFoodHit.protein_g) || 0,
+            carbs_g: Number(customFoodHit.carbs_g) || 0,
+            fat_g: Number(customFoodHit.fat_g) || 0,
+            fiber_g: Number(customFoodHit.fiber_g) || 0
+          },
+          confidence: Number(customFoodHit.confidence) || 0.8,
+          source: customFoodHit.source || 'user_custom_foods'
+        };
+
+        // Populate in-memory cache
+        cache.set(key, {
+          result,
+          expires: Date.now() + 24 * 60 * 60 * 1000
+        });
+
+        // Update updated_at timestamp on cache hit (only for user's own entry)
+        await supabase
+          .from('user_custom_foods')
+          .update({ updated_at: new Date().toISOString() })
+          .eq('id', customFoodHit.id)
+          .eq('user_id', userId); // SECURITY: Verify ownership before update
+
+        console.log(`[geminiCache] cache=custom-foods-hit name=${result.name}`);
+        return result;
+      }
+    } // End of userId check
   } catch (customErr) {
     console.warn('[geminiCache] user_custom_foods lookup failed:', customErr);
     // Continue to next lookup

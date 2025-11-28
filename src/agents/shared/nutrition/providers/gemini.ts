@@ -30,7 +30,7 @@ export const geminiProvider: MacroProvider = {
       serving_label: item.serving_label,
       size_label: item.size_label,
       country: 'us' // Default to US, cache handles user prefs
-    });
+    }, userId); // Pass userId for caching to user_custom_foods
   }
 };
 
