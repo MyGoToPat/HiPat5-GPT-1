@@ -2056,126 +2056,127 @@ export const ChatPat: React.FC = () => {
                   <ThinkingAvatar className="" label={statusText || 'Pat is thinking...'} />
                 </div>
               </div>
-            )})
+            )}
+          </div>
           {/* Scroll anchor */}
           <div ref={messagesEndRef} />
-      </main>
+        </main>
 
-{/* === Locked footer, single row === */}
-<footer
-  className="sticky bottom-0 z-50 bg-white border-t border-gray-200"
-  style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
->
-  <div className="mx-auto flex w-full max-w-5xl items-end gap-2 px-3 py-2">
-    {/* Plus */}
-    <button
-      type="button"
-      aria-label="More options"
-      onClick={() => setShowPlusMenu(!showPlusMenu)}
-      className="h-11 w-11 grid place-items-center rounded-full hover:bg-gray-100"
-    >
-      <Plus size={24} className="text-gray-700" />
-    </button>
-
-    {/* Web Toggle - Always visible, routing logic decides whether to use web */}
-    {!isDictating && (
-      <button
-        type="button"
-        onClick={() => setForceWeb(!forceWeb)}
-        className={`h-11 w-11 grid place-items-center rounded-full transition-colors ${
-          forceWeb ? 'bg-blue-100' : 'hover:bg-gray-100'
-        }`}
-        aria-label={forceWeb ? "Web search enabled" : "Enable web search"}
-      >
-        <Globe size={24} className={forceWeb ? 'text-blue-600' : 'text-gray-500'} />
-      </button>
-    )}
-
-    {/* Controlled input */}
-    <ChatInput
-      value={inputValue}
-      onChange={setInputValue}
-      onSend={handleSend}
-      isSending={isSending}
-      placeholder="Ask me anything"
-    />
-
-    {/* Mic */}
-    <button
-      type="button"
-      aria-label={isDictating ? "Stop dictation" : "Start dictation"}
-      onClick={isDictating ? stopDictation : startDictation}
-      className="h-11 w-11 grid place-items-center rounded-full hover:bg-gray-100"
-    >
-      {isDictating ? (
-        <StopCircle size={24} className="text-red-500" />
-      ) : (
-        <Mic size={24} className="text-gray-700" />
-      )}
-    </button>
-
-    {/* Send between Mic and Pat */}
-    <button
-      type="button"
-      aria-label="Send message"
-      onClick={handleSend}
-      disabled={isSending || inputValue.trim().length === 0}
-      className="h-11 w-11 rounded-full bg-emerald-500 text-white grid place-items-center disabled:opacity-50"
-    >
-      <ArrowUp className="h-5 w-5" strokeWidth={2.5} />
-    </button>
-
-    {/* Pat avatar - navigate to voice chat */}
-    <button
-      type="button"
-      aria-label="Talk with Pat"
-      onClick={() => navigate('/voice')}
-      className="h-11 w-11"
-    >
-      <PatAvatar mood={typeof getPatMood === "function" ? getPatMood() : "neutral"} />
-    </button>
-  </div>
-
-  {/* Plus menu popup */}
-  {showPlusMenu && (
-    <div className="absolute bottom-full left-4 right-4 mb-2 p-4 bg-gray-800 rounded-2xl shadow-xl">
-      {/* Camera action - prominent */}
-      <button
-        onClick={() => {
-          setShowPlusMenu(false);
-          handleChipClick('Show me what you\'re eating');
-        }}
-        className="w-full mb-3 flex items-center gap-3 px-4 py-4 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl hover:from-purple-700 hover:to-blue-700 transition-all active:scale-95"
-      >
-        <Camera size={24} className="text-white" />
-        <span className="text-white font-semibold">Take a picture</span>
-      </button>
-
-      {/* Other options - secondary */}
-      <div className="grid grid-cols-3 gap-2">
-        {plusMenuOptions.filter(o => o.id !== 'take').map((option) => {
-          const IconComponent = option.icon;
-          return (
+        {/* === Locked footer, single row === */}
+        <footer
+          className="sticky bottom-0 z-50 bg-white border-t border-gray-200"
+          style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+        >
+          <div className="mx-auto flex w-full max-w-5xl items-end gap-2 px-3 py-2">
+            {/* Plus */}
             <button
-              key={option.id}
-              onClick={() => {
-                setShowPlusMenu(false);
-                if (option.id === 'log-food') {
-                  // TODO: Implement food logging flow
-                  return;
-                }
-              }}
-              className="flex flex-col items-center gap-2 p-3 hover:bg-gray-700 rounded-lg transition-colors"
+              type="button"
+              aria-label="More options"
+              onClick={() => setShowPlusMenu(!showPlusMenu)}
+              className="h-11 w-11 grid place-items-center rounded-full hover:bg-gray-100"
             >
-              <IconComponent size={20} className="text-gray-300" />
-              <span className="text-xs text-gray-300">{option.label}</span>
+              <Plus size={24} className="text-gray-700" />
             </button>
-          );
-        })}
+
+            {/* Web Toggle - Always visible, routing logic decides whether to use web */}
+            {!isDictating && (
+              <button
+                type="button"
+                onClick={() => setForceWeb(!forceWeb)}
+                className={`h-11 w-11 grid place-items-center rounded-full transition-colors ${
+                  forceWeb ? 'bg-blue-100' : 'hover:bg-gray-100'
+                }`}
+                aria-label={forceWeb ? "Web search enabled" : "Enable web search"}
+              >
+                <Globe size={24} className={forceWeb ? 'text-blue-600' : 'text-gray-500'} />
+              </button>
+            )}
+
+            {/* Controlled input */}
+            <ChatInput
+              value={inputValue}
+              onChange={setInputValue}
+              onSend={handleSend}
+              isSending={isSending}
+              placeholder="Ask me anything"
+            />
+
+            {/* Mic */}
+            <button
+              type="button"
+              aria-label={isDictating ? "Stop dictation" : "Start dictation"}
+              onClick={isDictating ? stopDictation : startDictation}
+              className="h-11 w-11 grid place-items-center rounded-full hover:bg-gray-100"
+            >
+              {isDictating ? (
+                <StopCircle size={24} className="text-red-500" />
+              ) : (
+                <Mic size={24} className="text-gray-700" />
+              )}
+            </button>
+
+            {/* Send between Mic and Pat */}
+            <button
+              type="button"
+              aria-label="Send message"
+              onClick={handleSend}
+              disabled={isSending || inputValue.trim().length === 0}
+              className="h-11 w-11 rounded-full bg-emerald-500 text-white grid place-items-center disabled:opacity-50"
+            >
+              <ArrowUp className="h-5 w-5" strokeWidth={2.5} />
+            </button>
+
+            {/* Pat avatar - navigate to voice chat */}
+            <button
+              type="button"
+              aria-label="Talk with Pat"
+              onClick={() => navigate('/voice')}
+              className="h-11 w-11"
+            >
+              <PatAvatar mood={typeof getPatMood === "function" ? getPatMood() : "neutral"} />
+            </button>
+          </div>
+
+          {/* Plus menu popup */}
+          {showPlusMenu && (
+            <div className="absolute bottom-full left-4 right-4 mb-2 p-4 bg-gray-800 rounded-2xl shadow-xl">
+              {/* Camera action - prominent */}
+              <button
+                onClick={() => {
+                  setShowPlusMenu(false);
+                  handleChipClick('Show me what you\'re eating');
+                }}
+                className="w-full mb-3 flex items-center gap-3 px-4 py-4 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl hover:from-purple-700 hover:to-blue-700 transition-all active:scale-95"
+              >
+                <Camera size={24} className="text-white" />
+                <span className="text-white font-semibold">Take a picture</span>
+              </button>
+
+              {/* Other options - secondary */}
+              <div className="grid grid-cols-3 gap-2">
+                {plusMenuOptions.filter(o => o.id !== 'take').map((option) => {
+                  const IconComponent = option.icon;
+                  return (
+                    <button
+                      key={option.id}
+                      onClick={() => {
+                        setShowPlusMenu(false);
+                        if (option.id === 'log-food') {
+                          // TODO: Implement food logging flow
+                          return;
+                        }
+                      }}
+                      className="flex flex-col items-center gap-2 p-3 hover:bg-gray-700 rounded-lg transition-colors"
+                    >
+                      <IconComponent size={20} className="text-gray-300" />
+                      <span className="text-xs text-gray-300">{option.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </footer>
       </div>
-    </div>
-  )}
-</footer>
-    </div>
-  );
+    );
 };
