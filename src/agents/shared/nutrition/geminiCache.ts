@@ -151,6 +151,8 @@ const ZERO_CAL_BEVERAGES: Record<string, MacroResult> = {
 
 /**
  * Get cached Gemini results via Edge Function
+ * @param q - Query parameters for food lookup
+ * @param userId - Optional user ID for caching new results to user_custom_foods
  */
 export async function getCachedGemini(q: {
   name: string;
@@ -158,7 +160,7 @@ export async function getCachedGemini(q: {
   serving_label?: string;
   size_label?: string;
   country?: string;
-}): Promise<MacroResult | null> {
+}, userId?: string): Promise<MacroResult | null> {
   const supabase = getSupabase();
   
   // Guard against empty names
@@ -223,17 +225,13 @@ export async function getCachedGemini(q: {
         expires: Date.now() + 24 * 60 * 60 * 1000
       });
 
-      // Update last_queried_at and increment query_count (parse to number to avoid string concatenation)
-      const currentCount = Number(customFoodHit.query_count) || 0;
+      // Update updated_at timestamp on cache hit
       await supabase
         .from('user_custom_foods')
-        .update({ 
-          last_queried_at: new Date().toISOString(),
-          query_count: currentCount + 1
-        })
+        .update({ updated_at: new Date().toISOString() })
         .eq('id', customFoodHit.id);
 
-      console.log(`[geminiCache] cache=custom-foods-hit key=${canonicalKey}`);
+      console.log(`[geminiCache] cache=custom-foods-hit name=${result.name}`);
       return result;
     }
   } catch (customErr) {
@@ -487,12 +485,12 @@ Your response:`;
         } else {
           console.log(`[geminiCache] ✅ Updated user_custom_foods: ${result.name}`);
         }
-      } else {
-        // New entry - insert
+      } else if (userId) {
+        // New entry - insert (only if userId is available)
         const { error: insertError } = await supabase
           .from('user_custom_foods')
           .insert({
-            user_id: userId, // Required field
+            user_id: userId,
             name: result.name,
             brand: q.brand || null,
             serving_label: result.serving_label,
@@ -510,6 +508,8 @@ Your response:`;
         } else {
           console.log(`[geminiCache] ✅ Inserted to user_custom_foods: ${result.name}`);
         }
+      } else {
+        console.log(`[geminiCache] Skipping user_custom_foods insert (no userId)`);
       }
     }
 
