@@ -1,10 +1,10 @@
 console.info('[pat-build] v1.03', import.meta.url);
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
+import { RouterProvider } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import App from './App.tsx';
+import { router } from './App.tsx';
 import './index.css';
 
 // Add error boundary and better error handling
@@ -29,10 +29,8 @@ try {
   createRoot(rootElement).render(
     <StrictMode>
       <ErrorBoundary>
-        <BrowserRouter>
-          <Toaster position="top-right" />
-          <App />
-        </BrowserRouter>
+        <Toaster position="top-right" />
+        <RouterProvider router={router} />
       </ErrorBoundary>
     </StrictMode>
   );

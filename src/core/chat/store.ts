@@ -48,15 +48,15 @@ export async function storeMessage(
 }
 
 /**
- * Load recent messages for a session
+ * Load recent messages for a session (includes roleData for context detection)
  */
 export async function loadRecentMessages(
   sessionId: string,
   limit: number = 10
-): Promise<Array<{ role: 'user' | 'assistant'; content: string }>> {
+): Promise<Array<{ role: 'user' | 'assistant'; content: string; roleData?: any }>> {
   const { data, error } = await supabase
     .from('chat_messages')
-    .select('role, content, created_at')
+    .select('role, content, metadata, created_at')
     .eq('session_id', sessionId)
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -70,11 +70,13 @@ export async function loadRecentMessages(
   const messages = (data || []).reverse();
 
   // Filter out system messages for context (keep only user/assistant)
+  // Include roleData from metadata for follow-up context detection
   return messages
     .filter(m => m.role === 'user' || m.role === 'assistant')
     .map(m => ({
       role: m.role as 'user' | 'assistant',
       content: m.content,
+      roleData: m.metadata?.roleData || m.metadata || undefined,
     }));
 }
 

@@ -133,14 +133,19 @@ export async function buildSwarmPrompt(swarm: SwarmConfig, userContext?: Record<
   const enabledAgents = swarm.agents
     .filter(a => a.enabled)
     .sort((a, b) => {
-      const phaseOrder = { 'pre': 0, 'main': 1, 'post': 2 };
-      const phaseDiff = phaseOrder[a.phase] - phaseOrder[b.phase];
+      const pA = (a.phase || '').toLowerCase();
+      const pB = (b.phase || '').toLowerCase();
+      const phaseOrder: Record<string, number> = { 'pre': 0, 'main': 1, 'post': 2 };
+      const phaseDiff = (phaseOrder[pA] ?? 99) - (phaseOrder[pB] ?? 99);
       return phaseDiff !== 0 ? phaseDiff : a.order - b.order;
     });
 
   // Only include pre and main phases in system prompt
   // (post agents run after LLM response)
-  const promptAgents = enabledAgents.filter(a => a.phase === 'pre' || a.phase === 'main');
+  const promptAgents = enabledAgents.filter(a => {
+    const p = (a.phase || '').toLowerCase();
+    return p === 'pre' || p === 'main';
+  });
 
   for (const agent of promptAgents) {
     if (agent.prompt) {

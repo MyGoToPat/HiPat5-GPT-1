@@ -2,17 +2,16 @@
   "status": "commited",
   "type": "frontend",
   "scope": "codebase",
-  "localEndpoint": "http://localhost:5173",
+  "localEndpoint": "http://localhost:5176",
   "loginUser": "any2crds+pat1@gmail.com",
   "loginPassword": "admin123",
   "executionArgs": {
     "projectName": "HiPat5-GPT-1",
     "projectPath": "C:\\Users\\any2c\\Documents\\Code\\HiPat5-GPT-1",
     "testIds": [],
-    "additionalInstruction": "Test the HiPat5-GPT-1 nutrition and AI chat application. Focus on core functionality: authentication, chat with Pat AI, meal logging with TMWYA (Tell Me What You Ate), and TDEE calculation. Test both happy path and error scenarios. Verify personality injection and skill routing metadata logging.",
+    "additionalInstruction": "Focus on testing the ChatPat component functionality, including message input, sending, scrolling, and responsive design. Test both the chat interface and core features like nutrition logging and AI responses.",
     "envs": {
       "API_KEY": "sk-user-UA1OqpIILfNoMYoVN398TdZk5oUqgmupnyqUOVFDpEMCEXfiBklLWAc5QxJP3549S20Jv3405nhCtYvYtbIBlT7V-uDzJHSW41Cn92-AqGG0aUEoyov3o_cEz1wBSCF89_w"
     }
-  },
-  "proxy": "http://e3b87311-9fb3-410f-a78c-6ebf64e74f50:Ut6VWbAGXM29YBjbrzhGyLTGhhhBap3s@tun.testsprite.com:8080"
+  }
 }

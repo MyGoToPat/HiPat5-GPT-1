@@ -1,8 +1,8 @@
 // src/App.tsx — normalized route tree (fixes unterminated JSX + ensures admin-only agents)
 
 import React from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
-import { Toaster } from 'react-hot-toast';
+import { Routes, Route, Navigate, createBrowserRouter } from 'react-router-dom';
+// Toaster is rendered in main.tsx - do not duplicate here
 import { ErrorBoundary } from './components/ErrorBoundary';
 import ProtectedRoute from './components/auth/ProtectedRoute';
 import RootLayout from './layouts/RootLayout';
@@ -25,6 +25,7 @@ import CameraPage from './pages/CameraPage';
 import TDEEOnboardingWizard from './pages/TDEEOnboardingWizard';
 import TrainerDashboardPage from './pages/TrainerDashboardPage';
 import AdminPage from './pages/AdminPage';
+import MealLogPage from './pages/MealLogPage';
 
 // Admin/agents
 import AdminUsersPage from './pages/admin/AdminUsersPage';
@@ -39,11 +40,10 @@ import WelcomeBetaPage from './pages/WelcomeBetaPage';
 import { TMWYATestPage } from './pages/TMWYATestPage';
 
 
-function App() {
+function AppRoutes() {
 
   return (
     <ErrorBoundary>
-      <Toaster position="top-right" />
       <Routes>
         {/* PUBLIC ROUTES */}
         <Route path="/login" element={<LoginPage />} />
@@ -70,6 +70,7 @@ function App() {
           <Route path="chat-history" element={<ChatHistoryPage />} />
           <Route path="camera" element={<CameraPage />} />
           <Route path="voice" element={<VoicePage />} />
+          <Route path="log" element={<MealLogPage />} />
           <Route path="tmwya" element={<TMWYATestPage />} />
           <Route
             path="tdee"
@@ -98,4 +99,18 @@ function App() {
   );
 }
 
-export default App;
+// Note: Using path="/*" with AppRoutes that contains its own <Routes> is intentional.
+// This pattern delegates all routing to the AppRoutes component's internal <Routes>.
+export const router = createBrowserRouter([
+  {
+    path: "/*",
+    element: <AppRoutes />,
+  }
+], {
+  future: {
+    v7_relativeSplatPath: true,
+    v7_startTransition: true
+  }
+});
+
+export default AppRoutes;
