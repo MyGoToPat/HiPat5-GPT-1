@@ -185,13 +185,20 @@ export async function getCachedGemini(q: {
   }
 
   // ✅ Step 2: Check user_custom_foods (permanent shared cache)
-  const canonicalKey = canonicalKeyFrom(q);
+  // Query by name (and optionally brand) since table doesn't have normalized_key column
+  const searchName = q.name?.trim().toLowerCase() || foodName.toLowerCase();
   try {
-    const { data: customFoodHit, error: customError } = await supabase
+    let query = supabase
       .from('user_custom_foods')
       .select('*')
-      .eq('normalized_key', canonicalKey)
-      .maybeSingle();
+      .ilike('name', searchName);
+    
+    // If brand is specified, also filter by brand
+    if (q.brand) {
+      query = query.ilike('brand', q.brand.trim());
+    }
+    
+    const { data: customFoodHit, error: customError } = await query.maybeSingle();
 
     if (!customError && customFoodHit) {
       // Parse numeric fields (Supabase returns NUMERIC as strings)
@@ -444,22 +451,26 @@ Your response:`;
 
     // ✅ Step 4: Persist to user_custom_foods (permanent shared cache)
     if (result.macros.kcal > 0) {  // Only cache successful lookups
-      // Check if entry already exists to avoid resetting query_count
-      const { data: existingEntry } = await supabase
+      // Check if entry already exists by name (and brand if present)
+      let existingQuery = supabase
         .from('user_custom_foods')
-        .select('id, query_count')
-        .eq('normalized_key', canonicalKey)
-        .maybeSingle();
+        .select('id')
+        .ilike('name', result.name);
+      
+      if (q.brand) {
+        existingQuery = existingQuery.ilike('brand', q.brand.trim());
+      }
+      
+      const { data: existingEntry } = await existingQuery.maybeSingle();
 
       if (existingEntry) {
-        // Entry exists - update macros but preserve query_count
-        const currentCount = Number(existingEntry.query_count) || 0;
+        // Entry exists - update macros
         const { error: updateError } = await supabase
           .from('user_custom_foods')
           .update({
             name: result.name,
             brand: q.brand || null,
-            serving_description: result.serving_label,
+            serving_label: result.serving_label,
             serving_size_g: result.grams_per_serving,
             calories: result.macros.kcal,
             protein_g: result.macros.protein_g,
@@ -467,42 +478,37 @@ Your response:`;
             fat_g: result.macros.fat_g,
             fiber_g: result.macros.fiber_g || 0,
             source: 'gemini',
-            confidence: result.confidence,
-            last_queried_at: new Date().toISOString(),
-            query_count: currentCount + 1  // Increment existing count
+            updated_at: new Date().toISOString()
           })
           .eq('id', existingEntry.id);
 
         if (updateError) {
           console.warn('[geminiCache] user_custom_foods update failed:', updateError);
         } else {
-          console.log(`[geminiCache] ✅ Updated user_custom_foods: ${canonicalKey} (query_count: ${currentCount + 1})`);
+          console.log(`[geminiCache] ✅ Updated user_custom_foods: ${result.name}`);
         }
       } else {
-        // New entry - insert with query_count = 1
+        // New entry - insert
         const { error: insertError } = await supabase
           .from('user_custom_foods')
           .insert({
-            normalized_key: canonicalKey,
+            user_id: userId, // Required field
             name: result.name,
             brand: q.brand || null,
-            serving_description: result.serving_label,
+            serving_label: result.serving_label,
             serving_size_g: result.grams_per_serving,
             calories: result.macros.kcal,
             protein_g: result.macros.protein_g,
             carbs_g: result.macros.carbs_g,
             fat_g: result.macros.fat_g,
             fiber_g: result.macros.fiber_g || 0,
-            source: 'gemini',
-            confidence: result.confidence,
-            last_queried_at: new Date().toISOString(),
-            query_count: 1
+            source: 'gemini'
           });
 
         if (insertError) {
           console.warn('[geminiCache] user_custom_foods insert failed:', insertError);
         } else {
-          console.log(`[geminiCache] ✅ Inserted to user_custom_foods: ${canonicalKey}`);
+          console.log(`[geminiCache] ✅ Inserted to user_custom_foods: ${result.name}`);
         }
       }
     }

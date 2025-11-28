@@ -371,25 +371,52 @@ async function lookupMacrosInCascade(items: any[], userId?: string): Promise<any
         if (key === 'openai') {
           providerFn = lookupOpenAI;
         } else if (key === 'openfoodfacts') {
-          providerFn = lookupOpenFoodFacts;
+          // OpenFoodFacts has different signature - wrap it
+          providerFn = null; // Handle separately below
         } else {
           providerFn = PROVIDERS[key];
         }
 
-        if (providerFn) {
+        if (key === 'openfoodfacts') {
+          // Special handling for OpenFoodFacts - different function signature
           try {
-            // OpenFoodFacts provider signature matches macro provider signature
+            const offResult = await lookupOpenFoodFacts(normalized.name, normalized.brand);
+            if (offResult && offResult.calories > 0) {
+              macroResult = {
+                name: offResult.name,
+                brand: offResult.brand,
+                serving_label: `${offResult.serving_size_g}g`,
+                grams_per_serving: offResult.serving_size_g,
+                macros: {
+                  kcal: offResult.calories,
+                  protein_g: offResult.protein_g,
+                  carbs_g: offResult.carbs_g,
+                  fat_g: offResult.fat_g,
+                  fiber_g: offResult.fiber_g
+                },
+                confidence: offResult.confidence,
+                source: 'openfoodfacts',
+                source_url: offResult.source_url
+              };
+              // OpenFoodFacts success - save and break
+              providerUsed = 'openfoodfacts';
+              skillsFired.push('macro_lookup_openfoodfacts');
+              console.log(`[nutrition] OpenFoodFacts found macros for "${item.name}"`);
+              await saveToUserCustomFoods(macroResult, userId);
+              found = true;
+              break;
+            }
+          } catch (err) {
+            console.error(`[nutrition] OpenFoodFacts error for "${item.name}":`, err);
+            continue; // Try next provider
+          }
+        } else if (providerFn) {
+          try {
             macroResult = await providerFn(normalized, userId);
             if (macroResult && macroResult.macros && macroResult.macros.kcal > 0) {
               providerUsed = key;
               skillsFired.push(`macro_lookup_${key}`); // Track skill usage
               console.log(`[nutrition] Provider ${key} found macros for "${item.name}"`);
-              
-              // ✨ WRITE-BACK: If found via Internet (OpenFoodFacts), save to Custom Foods
-              if (key === 'openfoodfacts') {
-                await saveToUserCustomFoods(macroResult, userId);
-              }
-              
               found = true;
               break;
             }

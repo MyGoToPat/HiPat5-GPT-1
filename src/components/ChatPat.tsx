@@ -167,7 +167,7 @@ export const ChatPat: React.FC = () => {
       loadLiveDashboard();
     }
   }, [userId]);
-  const [inputText, setInputText] = useState('');
+  // Removed: inputText state consolidated into inputValue (line 67)
   const [showPlusMenu, setShowPlusMenu] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [isDictating, setIsDictating] = useState(false);
@@ -388,7 +388,7 @@ export const ChatPat: React.FC = () => {
     continuous: true,
     interimResults: true,
     onResult: (transcript, isFinal) => {
-      setInputText(transcript);
+      setInputValue(transcript);
       if (isFinal && transcript.trim()) {
         // Auto-submit after a brief pause
         setTimeout(() => {
@@ -730,14 +730,14 @@ export const ChatPat: React.FC = () => {
     sendingRef.current = true;
 
     try {
-      // Use provided text or fall back to inputText state
-      const messageText = text || inputText.trim();
+      // Use provided text or fall back to inputValue state (consolidated input state)
+      const messageText = text || inputValue.trim();
       if (messageText) {
         const lowerInput = messageText.toLowerCase().trim();
 
       // SHORTCUT: If verification screen is active and user types "log" or "save", confirm it
       if (showFoodVerificationScreen && currentAnalysisResult && (lowerInput === 'log' || lowerInput === 'save')) {
-        if (!text) setInputText(''); // Only clear if not called with text parameter
+        if (!text) setInputValue(''); // Only clear if not called with text parameter
         // Trigger the same confirmation flow
         // The verification screen will call handleConfirmVerification with the data
         // We need to get the normalized meal data from FoodVerificationScreen
@@ -791,7 +791,7 @@ export const ChatPat: React.FC = () => {
             if (matchedItems.length > 0) {
               const foodText = matchedItems.map((item: any) => item.name).join(', ');
               // Legacy handler removed - let unified handler process via intent
-              setInputText(`I ate ${foodText}`);
+              setInputValue(`I ate ${foodText}`);
               return;
             } else {
               toast.error(`Could not find "${subset}" in the recent macro discussion.`);
@@ -802,7 +802,7 @@ export const ChatPat: React.FC = () => {
             const foodItems = macroPayload.items.map((item: any) => item.name);
             const foodText = foodItems.join(', ');
             // Legacy handler removed - let unified handler process via intent
-            setInputText(`I ate ${foodText}`);
+            setInputValue(`I ate ${foodText}`);
             return;
           }
         }
@@ -819,14 +819,14 @@ export const ChatPat: React.FC = () => {
 
         // Treat the response as if user said "I ate [food]"
         // Legacy handler removed - let unified handler process via intent
-        const mealText = inputText.startsWith('I ate') || inputText.startsWith('i ate') ? inputText : `I ate ${inputText}`;
-        setInputText(mealText);
+        const mealText = messageText.startsWith('I ate') || messageText.startsWith('i ate') ? messageText : `I ate ${messageText}`;
+        setInputValue(mealText);
         return;
       }
 
       // Legacy meal path disabled - unified handler processes meal_logging intent
-      // if (isMealText(inputText)) {
-      //   handleMealTextInput(inputText);
+      // if (isMealText(messageText)) {
+      //   handleMealTextInput(messageText);
       //   return;
       // }
 
@@ -838,7 +838,7 @@ export const ChatPat: React.FC = () => {
       
       const newMessage: ChatMessage = {
         id: Date.now().toString(),
-        text: inputText,
+        text: messageText,
         timestamp: new Date(),
         isUser: true
       };
@@ -852,7 +852,7 @@ export const ChatPat: React.FC = () => {
       };
 
       setMessages(prev => [...prev, newMessage, thinkingMessage]);
-      if (!text) setInputText(''); // Only clear if not called with text parameter
+      if (!text) setInputValue(''); // Only clear if not called with text parameter
       setIsTyping(false);
       
       // Handle agent-specific responses
@@ -1326,13 +1326,13 @@ export const ChatPat: React.FC = () => {
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
-    setInputText(value);
+    setInputValue(value);
     setIsTyping(value.trim().length > 0);
   };
 
   const startDictation = () => {
     setIsDictating(true);
-    setInputText('');
+    setInputValue('');
     setIsTyping(false);
     
     if (speechRecognition.isSupported) {
@@ -1349,14 +1349,14 @@ export const ChatPat: React.FC = () => {
   };
 
   const submitDictation = () => {
-    if (inputText.trim()) {
+    if (inputValue.trim()) {
       handleSendMessage();
     }
     stopDictation();
   };
 
   const cancelDictation = () => {
-    setInputText('');
+    setInputValue('');
     speechRecognition.reset();
     stopDictation();
   };
@@ -1400,7 +1400,7 @@ export const ChatPat: React.FC = () => {
     // Reset other states
     setActiveAgentSession(null);
     setSilentMode(false);
-    setInputText('');
+    setInputValue('');
     setIsTyping(false);
   };
 
@@ -1447,7 +1447,7 @@ export const ChatPat: React.FC = () => {
     // Reset other states
     setActiveAgentSession(null);
     setSilentMode(false);
-    setInputText('');
+    setInputValue('');
     setIsTyping(false);
   };
 

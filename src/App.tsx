@@ -99,9 +99,11 @@ function AppRoutes() {
   );
 }
 
+// Note: Using path="/*" with AppRoutes that contains its own <Routes> is intentional.
+// This pattern delegates all routing to the AppRoutes component's internal <Routes>.
 export const router = createBrowserRouter([
   {
-    path: "*",
+    path: "/*",
     element: <AppRoutes />,
   }
 ], {
