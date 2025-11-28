@@ -57,6 +57,7 @@ export interface MessageContext {
   messageHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
   mode?: 'text' | 'voice';
   sessionId?: string; // Optional: provide existing session ID
+  forceWeb?: boolean; // Manual toggle for web search (Globe button)
 }
 
 export interface MessageResponse {
@@ -679,9 +680,17 @@ export async function handleUserMessage(
       functions: [TMWYA_TOOL]
     } as any;
   } else if (routeDecision.route === 'AMA') {
-    // AMA: web-first by default, unless user opts out
+    // AMA: Check if user manually enabled web search (Globe button) or if message needs it
     const channel = decideAmaChannel(message);
-    if (channel === 'ama-web') {
+    const useWebSearch = context.forceWeb || channel === 'ama-web';
+    
+    console.log('[handleUserMessage] AMA routing:', {
+      forceWeb: context.forceWeb,
+      channelDecision: channel,
+      useWebSearch
+    });
+    
+    if (useWebSearch) {
       // Web-connected path: Gemini + search
       provider = "gemini";
       grounded = true;
