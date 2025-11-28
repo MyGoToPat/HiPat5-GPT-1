@@ -83,6 +83,7 @@ export const ChatPat: React.FC = () => {
   const hydratingRef = useRef(false);        // gate re-entrant loads
   const sendingRef = useRef(false);          // prevent double-send in dev
   const sessionIdRef = useRef<string | null>(null); // keep sessionId ref for async updates
+  const handleSendMessageRef = useRef<((text?: string) => Promise<void>) | null>(null); // ref for stable callback
 
   // Helper to deduplicate messages by ID
   function dedupeById<T extends { id?: string }>(arr: T[]): T[] {
@@ -713,8 +714,9 @@ export const ChatPat: React.FC = () => {
     const text = inputValue.trim();
     if (!text) return;
     setInputValue("");
-    if (typeof handleSendMessage === "function") {
-      handleSendMessage(text);
+    // Use ref to get latest handleSendMessage without stale closure
+    if (handleSendMessageRef.current) {
+      handleSendMessageRef.current(text);
     }
   }, [inputValue]);
 
@@ -1174,6 +1176,9 @@ export const ChatPat: React.FC = () => {
       sendingRef.current = false;
     }
   };
+
+  // Keep ref updated with latest handleSendMessage to avoid stale closures
+  handleSendMessageRef.current = handleSendMessage;
 
   // Legacy meal logging handlers removed - unified handler processes meal_logging intent
 

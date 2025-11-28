@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { Routes, Route, Navigate, createBrowserRouter } from 'react-router-dom';
-import { Toaster } from 'react-hot-toast';
+// Toaster is rendered in main.tsx - do not duplicate here
 import { ErrorBoundary } from './components/ErrorBoundary';
 import ProtectedRoute from './components/auth/ProtectedRoute';
 import RootLayout from './layouts/RootLayout';
@@ -44,7 +44,6 @@ function AppRoutes() {
 
   return (
     <ErrorBoundary>
-      <Toaster position="top-right" />
       <Routes>
         {/* PUBLIC ROUTES */}
         <Route path="/login" element={<LoginPage />} />

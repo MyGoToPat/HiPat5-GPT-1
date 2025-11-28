@@ -157,13 +157,13 @@ async function lookupUserCustomFoods(normalized: any, userId?: string): Promise<
         name: data.name,
         brand: data.brand,
         serving_label: data.serving_label,
-        grams_per_serving: data.serving_size_g || 100,
+        grams_per_serving: Number(data.serving_size_g) || 100,
         macros: {
-          kcal: data.calories,
-          protein_g: data.protein_g,
-          carbs_g: data.carbs_g,
-          fat_g: data.fat_g,
-          fiber_g: data.fiber_g
+          kcal: Number(data.calories) || 0,
+          protein_g: Number(data.protein_g) || 0,
+          carbs_g: Number(data.carbs_g) || 0,
+          fat_g: Number(data.fat_g) || 0,
+          fiber_g: Number(data.fiber_g) || 0
         },
         confidence: 1.0, // User defined = high confidence
         source: 'user_custom',
@@ -387,7 +387,7 @@ async function lookupMacrosInCascade(items: any[], userId?: string): Promise<any
               
               // ✨ WRITE-BACK: If found via Internet (OpenFoodFacts), save to Custom Foods
               if (key === 'openfoodfacts') {
-                saveToUserCustomFoods(macroResult, userId);
+                await saveToUserCustomFoods(macroResult, userId);
               }
               
               found = true;
