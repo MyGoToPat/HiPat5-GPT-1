@@ -2122,11 +2122,11 @@ export const ChatPat: React.FC = () => {
       <ArrowUp className="h-5 w-5" strokeWidth={2.5} />
     </button>
 
-    {/* Pat avatar */}
+    {/* Pat avatar - navigate to voice chat */}
     <button
       type="button"
       aria-label="Talk with Pat"
-      onClick={() => typeof onPatAvatarClick === "function" && onPatAvatarClick()}
+      onClick={() => navigate('/voice')}
       className="h-11 w-11"
     >
       <PatAvatar mood={typeof getPatMood === "function" ? getPatMood() : "neutral"} />

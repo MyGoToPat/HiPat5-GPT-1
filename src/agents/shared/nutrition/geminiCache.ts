@@ -184,11 +184,11 @@ export async function getCachedGemini(q: {
     return hit.result;
   }
 
-  // ✅ Step 2: Check custom_foods (permanent shared cache)
+  // ✅ Step 2: Check user_custom_foods (permanent shared cache)
   const canonicalKey = canonicalKeyFrom(q);
   try {
     const { data: customFoodHit, error: customError } = await supabase
-      .from('custom_foods')
+      .from('user_custom_foods')
       .select('*')
       .eq('normalized_key', canonicalKey)
       .maybeSingle();
@@ -207,7 +207,7 @@ export async function getCachedGemini(q: {
           fiber_g: Number(customFoodHit.fiber_g) || 0
         },
         confidence: Number(customFoodHit.confidence) || 0.8,
-        source: customFoodHit.source || 'custom_foods'
+        source: customFoodHit.source || 'user_custom_foods'
       };
 
       // Populate in-memory cache
@@ -219,7 +219,7 @@ export async function getCachedGemini(q: {
       // Update last_queried_at and increment query_count (parse to number to avoid string concatenation)
       const currentCount = Number(customFoodHit.query_count) || 0;
       await supabase
-        .from('custom_foods')
+        .from('user_custom_foods')
         .update({ 
           last_queried_at: new Date().toISOString(),
           query_count: currentCount + 1
@@ -230,7 +230,7 @@ export async function getCachedGemini(q: {
       return result;
     }
   } catch (customErr) {
-    console.warn('[geminiCache] custom_foods lookup failed:', customErr);
+    console.warn('[geminiCache] user_custom_foods lookup failed:', customErr);
     // Continue to next lookup
   }
 
@@ -442,11 +442,11 @@ Your response:`;
       source: 'gemini'
     };
 
-    // ✅ Step 4: Persist to custom_foods (permanent shared cache)
+    // ✅ Step 4: Persist to user_custom_foods (permanent shared cache)
     if (result.macros.kcal > 0) {  // Only cache successful lookups
       // Check if entry already exists to avoid resetting query_count
       const { data: existingEntry } = await supabase
-        .from('custom_foods')
+        .from('user_custom_foods')
         .select('id, query_count')
         .eq('normalized_key', canonicalKey)
         .maybeSingle();
@@ -455,7 +455,7 @@ Your response:`;
         // Entry exists - update macros but preserve query_count
         const currentCount = Number(existingEntry.query_count) || 0;
         const { error: updateError } = await supabase
-          .from('custom_foods')
+          .from('user_custom_foods')
           .update({
             name: result.name,
             brand: q.brand || null,
@@ -474,14 +474,14 @@ Your response:`;
           .eq('id', existingEntry.id);
 
         if (updateError) {
-          console.warn('[geminiCache] custom_foods update failed:', updateError);
+          console.warn('[geminiCache] user_custom_foods update failed:', updateError);
         } else {
-          console.log(`[geminiCache] ✅ Updated custom_foods: ${canonicalKey} (query_count: ${currentCount + 1})`);
+          console.log(`[geminiCache] ✅ Updated user_custom_foods: ${canonicalKey} (query_count: ${currentCount + 1})`);
         }
       } else {
         // New entry - insert with query_count = 1
         const { error: insertError } = await supabase
-          .from('custom_foods')
+          .from('user_custom_foods')
           .insert({
             normalized_key: canonicalKey,
             name: result.name,
@@ -500,9 +500,9 @@ Your response:`;
           });
 
         if (insertError) {
-          console.warn('[geminiCache] custom_foods insert failed:', insertError);
+          console.warn('[geminiCache] user_custom_foods insert failed:', insertError);
         } else {
-          console.log(`[geminiCache] ✅ Inserted to custom_foods: ${canonicalKey}`);
+          console.log(`[geminiCache] ✅ Inserted to user_custom_foods: ${canonicalKey}`);
         }
       }
     }

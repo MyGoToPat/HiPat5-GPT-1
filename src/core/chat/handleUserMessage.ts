@@ -54,7 +54,7 @@ function stripLeadingStyleJSON(raw: string): string {
 export interface MessageContext {
   userId: string;
   userContext?: UserContext;
-  messageHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  messageHistory?: Array<{ role: 'user' | 'assistant'; content: string; roleData?: any }>;
   mode?: 'text' | 'voice';
   sessionId?: string; // Optional: provide existing session ID
   forceWeb?: boolean; // Manual toggle for web search (Globe button)
@@ -884,7 +884,7 @@ Please acknowledge this meal logging and provide a brief summary.`;
 interface LLMCallParams {
   system: string;
   userMessage: string;
-  messageHistory: Array<{ role: 'user' | 'assistant'; content: string }>;
+  messageHistory: Array<{ role: 'user' | 'assistant'; content: string; roleData?: any }>;
   roleData: any;
   modelSelection: ModelSelection;
   userId: string;
